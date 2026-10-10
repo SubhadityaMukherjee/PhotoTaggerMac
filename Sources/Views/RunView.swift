@@ -121,6 +121,9 @@ struct RunView: View {
             HStack(spacing: 24) {
                 Stat(number: stats.done, label: "tagged")
                 if stats.failed > 0 { Stat(number: stats.failed, label: "failed") }
+                if stats.skippedReadOnly > 0 {
+                    Stat(number: stats.skippedReadOnly, label: "read-only skipped")
+                }
                 if stats.skippedAlreadyTagged > 0 {
                     Stat(number: stats.skippedAlreadyTagged, label: "already tagged")
                 }

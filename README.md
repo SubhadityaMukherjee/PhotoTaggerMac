@@ -126,6 +126,7 @@ scripts/      build_and_install (auto-installs Xcode's Metal toolchain on first 
 
 ## Troubleshooting
 
+- **“Photos rejected the keyword change: Photos error NNNN (…)”** — the number identifies the cause: `3300 changeNotSupported` / `3306 requestNotSupportedForAsset` usually mean the photo is read-only in Photos (shared iCloud albums) — those are now skipped automatically and never retried; `3301 operationInterrupted` is transient and retried once; `3307 limitExceeded` retries with a trimmed tag set; `3164 networkAccessRequired` / `3169 networkError` mean the iCloud original couldn't be fetched — the photo is counted failed and picked up on a later run. Every failure is also written to the console log: `log show --predicate 'process == "PhotoTagger"' --last 15m`.
 - **“The model download was incomplete … The cached copy was cleared”** — a transient network failure. Just click Tag All again; the app wipes the bad cache and re-downloads. Weights live in `~/.cache/huggingface/hub/models--mlx-community--Qwen3-VL-8B-Instruct-4bit` (~5.4 GB) if you ever want to reclaim the space.
 - **Download seems stuck** — the big shard (4.9 GB) buffers into a hidden `CFNetworkDownload_*.tmp` file under `/var/folders/.../T/` before materializing in the cache, so cache size can sit still for minutes while bytes flow. Give it time on slow links (~10 min at 10 MB/s).
 - **“Could not load the AI model”** — check free disk space and that `huggingface.co` is reachable.

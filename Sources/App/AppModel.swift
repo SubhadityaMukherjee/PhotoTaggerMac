@@ -33,6 +33,7 @@ final class AppModel {
         var failed = 0
         var skippedVideos = 0
         var skippedAlreadyTagged = 0
+        var skippedReadOnly = 0
     }
 
     // MARK: - State
@@ -129,8 +130,10 @@ final class AppModel {
 
         let targets =
             includeAlreadyTagged
-            ? assets.images
-            : assets.images.filter { !store.contains($0.localIdentifier) }
+            ? assets.images.filter { !store.isKnownReadOnly($0.localIdentifier) }
+            : assets.images.filter {
+                !store.contains($0.localIdentifier) && !store.isKnownReadOnly($0.localIdentifier)
+            }
 
         guard !targets.isEmpty else { return }
 
@@ -196,6 +199,14 @@ final class AppModel {
         for asset in targets {
             if Task.isCancelled { break }
 
+            // Skip known read-only assets before spending inference on them
+            // (shared iCloud albums and similar reject property edits).
+            if !asset.canPerform(.properties) {
+                store.insertReadOnly(asset.localIdentifier)
+                runStats.skippedReadOnly += 1
+                continue
+            }
+
             currentFileName = PhotoLibraryService.displayName(for: asset)
             currentTags = []
 
@@ -222,12 +233,27 @@ final class AppModel {
                     TagEvent(assetLocalID: asset.localIdentifier, fileName: currentFileName, tags: tags),
                     at: 0)
                 if recentEvents.count > 100 { recentEvents.removeLast(recentEvents.count - 100) }
+            } catch let error as PhotoLibraryError {
+                if case .assetNotEditable = error {
+                    // Shared-album / restricted photos: expected, not a failure.
+                    store.insertReadOnly(asset.localIdentifier)
+                    runStats.skippedReadOnly += 1
+                } else {
+                    runStats.failed += 1
+                    lastFailureMessage = "\(currentFileName ?? "photo"): \(error.localizedDescription)"
+                    NSLog(
+                        "PhotoTagger: write failed for \(currentFileName ?? "?") (\(asset.localIdentifier)): \(error)"
+                    )
+                }
             } catch is CancellationError {
                 break
             } catch {
                 // Per-photo failures shouldn't kill the run.
                 runStats.failed += 1
                 lastFailureMessage = "\(currentFileName ?? "photo"): \(error.localizedDescription)"
+                NSLog(
+                    "PhotoTagger: photo failed \(currentFileName ?? "?") (\(asset.localIdentifier)): \(error)"
+                )
             }
         }
     }

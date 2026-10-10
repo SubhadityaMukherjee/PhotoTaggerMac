@@ -44,6 +44,9 @@ struct AlbumAssets {
 enum PhotoLibraryError: LocalizedError {
     case notAuthorized
     case imageUnavailable
+    /// The asset rejects property edits (e.g. photos inside shared iCloud
+    /// albums). Surfaced as a skip, not a failure.
+    case assetNotEditable(fileName: String?)
     case changeFailed(String)
 
     var errorDescription: String? {
@@ -52,11 +55,37 @@ enum PhotoLibraryError: LocalizedError {
             return "PhotoTagger needs access to your photo library."
         case .imageUnavailable:
             return "Could not load this photo's image data."
+        case .assetNotEditable(let fileName):
+            return
+                "\(fileName ?? "Photo") is read-only in Photos (e.g. a shared-album photo) — skipped."
         case .changeFailed(let reason):
             return "Photos rejected the keyword change: \(reason)"
         }
     }
 }
+
+/// Names for the PHPhotosError codes we may see, so problems show up as
+/// "Photos error 3300 (changeNotSupported)" instead of a bare domain.
+private let photoErrorCodeNames: [Int: String] = [
+    -1: "internalError",
+    3072: "userCancelled",
+    3114: "libraryVolumeOffline",
+    3142: "relinquishingLibraryToWriter",
+    3143: "switchingSystemPhotoLibrary",
+    3164: "networkAccessRequired",
+    3169: "networkError",
+    3201: "identifierNotFound",
+    3202: "multipleIdentifiersFound",
+    3300: "changeNotSupported",
+    3301: "operationInterrupted",
+    3302: "invalidResource",
+    3303: "missingResource",
+    3305: "notEnoughSpace",
+    3306: "requestNotSupportedForAsset",
+    3307: "limitExceeded",
+    3310: "accessRestricted",
+    3311: "accessUserDenied",
+]
 
 /// All PhotoKit access in one place: authorization, album listing, image
 /// loading (HEIC-aware, orientation-corrected, downscaled), and the one kind
@@ -249,20 +278,72 @@ final class PhotoLibraryService {
     /// associated will be silently ignored" — so existing keywords are
     /// guaranteed to survive untouched and there is no read-modify-write
     /// race. Nothing else about the asset (pixels, dates, albums) changes.
+    ///
+    /// Read-only assets (shared iCloud albums, restricted items) are
+    /// detected up front and reported as `assetNotEditable`; transient
+    /// Photos errors are retried once; a per-asset keyword limit falls back
+    /// to fewer tags rather than failing the photo.
     @discardableResult
     func addKeywords(_ tags: [String], to asset: PHAsset) async throws -> Bool {
         guard !tags.isEmpty else { return false }
 
+        guard asset.canPerform(.properties) else {
+            throw PhotoLibraryError.assetNotEditable(
+                fileName: PhotoLibraryService.displayName(for: asset))
+        }
+
         do {
-            try await PHPhotoLibrary.shared().performChanges {
-                let request = PHAssetChangeRequest(for: asset)
-                for tag in tags {
-                    request.addKeyword(tag)
-                }
-            }
+            try await performKeywordChange(tags, for: asset)
             return true
         } catch {
-            throw PhotoLibraryError.changeFailed(error.localizedDescription)
+            let ns = error as NSError
+            guard ns.domain == PHPhotosErrorDomain else {
+                throw PhotoLibraryError.changeFailed(describe(error))
+            }
+
+            // Transient library hiccups: one retry after a beat.
+            let transient = [-1, 3301]  // internalError, operationInterrupted
+            if transient.contains(ns.code) {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                do {
+                    try await performKeywordChange(tags, for: asset)
+                    return true
+                } catch {
+                    throw PhotoLibraryError.changeFailed(describe(error))
+                }
+            }
+
+            // Per-asset keyword limit: retry with a trimmed set instead of
+            // losing the photo entirely.
+            if ns.code == 3307, tags.count > 6 {
+                do {
+                    try await performKeywordChange(Array(tags.prefix(6)), for: asset)
+                    return true
+                } catch {
+                    throw PhotoLibraryError.changeFailed(describe(error))
+                }
+            }
+
+            throw PhotoLibraryError.changeFailed(describe(error))
         }
+    }
+
+    private func performKeywordChange(_ tags: [String], for asset: PHAsset) async throws {
+        try await PHPhotoLibrary.shared().performChanges {
+            let request = PHAssetChangeRequest(for: asset)
+            for tag in tags {
+                request.addKeyword(tag)
+            }
+        }
+    }
+
+    private func describe(_ error: Error) -> String {
+        let ns = error as NSError
+        if ns.domain == PHPhotosErrorDomain,
+            let name = photoErrorCodeNames[ns.code]
+        {
+            return "Photos error \(ns.code) (\(name)) — \(ns.localizedDescription)"
+        }
+        return ns.localizedDescription
     }
 }
