@@ -1,0 +1,282 @@
+import Foundation
+import MLXLMCommon
+import MLXVLM
+import HuggingFace
+
+/// Downloads (first run) and loads the Qwen3-VL 8B 4-bit model into memory.
+///
+/// The model runs fully on-device via MLX (Apple's Metal-backed array
+/// framework) — no server, no API keys, nothing leaves the machine.
+///
+/// The store owns one background load task; callers observe `phase` (and
+/// `containerIfReady`) while awaiting it. A download interrupted by the user
+/// continues in the background — the next "Tag All" resumes where it left
+/// off via the Hugging Face cache.
+@MainActor
+@Observable
+final class ModelStore {
+
+    static let modelID = "mlx-community/Qwen3-VL-8B-Instruct-4bit"
+    static let modelDisplayName = "Qwen3-VL 8B (4-bit)"
+    /// Rough on-disk size, used for labels until download progress reports
+    /// the real total.
+    static let approximateBytes: Int64 = 5_200_000_000
+
+    enum Phase: Equatable {
+        case notLoaded
+        case downloading(totalBytes: Int64, receivedBytes: Int64)
+        case loading
+        case ready
+        case failed(String)
+
+        var isBusy: Bool {
+            switch self {
+            case .downloading, .loading: return true
+            default: return false
+            }
+        }
+    }
+
+    private(set) var phase: Phase = .notLoaded
+
+    @ObservationIgnored
+    private var container: ModelContainer?
+    @ObservationIgnored
+    private var loadTask: Task<Void, Never>?
+
+    var containerIfReady: ModelContainer? { container }
+
+    /// Starts the one-time download + load if needed. Safe to call anytime.
+    func startLoadingIfNeeded() {
+        guard container == nil, loadTask == nil, !phase.isBusy else { return }
+        phase = .downloading(totalBytes: Self.approximateBytes, receivedBytes: 0)
+
+        loadTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let container = try await self.loadFromHub()
+                self.container = container
+                self.phase = .ready
+                NSLog("PhotoTagger: model ready")
+            } catch is CancellationError {
+                if self.container == nil { self.phase = .notLoaded }
+            } catch {
+                NSLog("PhotoTagger: model load failed: \(error)")
+                if self.container == nil {
+                    self.phase = .failed(error.localizedDescription)
+                }
+            }
+            self.loadTask = nil
+        }
+    }
+
+    // MARK: - Loading
+
+    private func loadFromHub() async throws -> ModelContainer {
+        let client = HubClient()
+        let loader = HuggingFaceTokenizerLoader()
+        let downloader = HubDownloader(client: client)
+
+        // The factory download (revision "main") always re-lists the repo
+        // tree and fetches anything missing from the HF cache, so
+        // interrupted downloads resume correctly. There is deliberately NO
+        // localFilesOnly fast path: that API can hand back a partially
+        // downloaded snapshot, and MLX's loader traps (crashes) on missing
+        // weight shards. We therefore download ourselves, validate the
+        // snapshot before MLX ever sees it, and — if incomplete — wipe the
+        // repo cache and download fresh once more.
+        do {
+            let directory = try await downloadValidated(downloader)
+            return try await loadModelContainer(from: directory, using: loader)
+        } catch {
+            guard error is ModelValidationError else { throw error }
+            try Self.wipeRepoCache()
+            let directory = try await downloadValidated(downloader)
+            return try await loadModelContainer(from: directory, using: loader)
+        }
+    }
+
+    private func downloadValidated(_ downloader: HubDownloader) async throws -> URL {
+        phase = .downloading(totalBytes: Self.approximateBytes, receivedBytes: 0)
+        let directory = try await downloader.download(
+            id: Self.modelID,
+            revision: nil,
+            matching: ["*.safetensors", "*.json", "*.jinja"],
+            useLatest: false,
+            progressHandler: { [weak self] progress in
+                Task { @MainActor in
+                    self?.handleProgress(progress)
+                }
+            })
+        phase = .loading
+        try await Self.validateSnapshot(at: directory)
+        return directory
+    }
+
+    // MARK: - Snapshot validation
+
+    enum ModelValidationError: LocalizedError {
+        case noWeightFiles
+        case treeListingFailed(String)
+        case incompleteSnapshot(missing: [String], sizeMismatches: [String])
+        case corruptWeightFile(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .noWeightFiles:
+                return "The model download contains no weight files. The cached copy was cleared — try again."
+            case .treeListingFailed(let message):
+                return "Could not verify the model against huggingface.co (\(message)). Check your connection and try again."
+            case .incompleteSnapshot(let missing, let sizeMismatches):
+                var parts: [String] = []
+                if !missing.isEmpty {
+                    parts.append("missing files: \(missing.prefix(3).joined(separator: ", "))")
+                }
+                if !sizeMismatches.isEmpty {
+                    parts.append(
+                        "truncated files: \(sizeMismatches.prefix(3).joined(separator: ", "))")
+                }
+                return
+                    "The model download was incomplete (\(parts.joined(separator: "; "))). The cached copy was cleared — try again."
+            case .corruptWeightFile(let name):
+                return
+                    "A model weight file is unreadable (\(name)). The cached copy was cleared — try again."
+            }
+        }
+    }
+
+    /// Verifies the downloaded snapshot against the repo's file tree before
+    /// MLX ever sees it. MLX's loader **traps** (hard crash) on missing or
+    /// mismatched weights rather than throwing, so this is the safety net
+    /// that turns a partial download into a clean error.
+    ///
+    /// The check is deliberately index-independent: repos on the hub can
+    /// carry a stale `model.safetensors.index.json` (shard names/counts from
+    /// a different upload) while their actual safetensors files are complete
+    /// and load fine via MLX's conventional-name fallback. So we trust the
+    /// git tree listing instead: every `*.safetensors` it names must be
+    /// present at the exact expected size, and each file's safetensors
+    /// header must parse.
+    nonisolated static func validateSnapshot(at directory: URL) async throws {
+        let entries = try await fetchTreeEntries()
+        let expected: [(path: String, size: Int)] =
+            entries
+            .compactMap { entry in
+                guard entry["path"] as? String != nil,
+                    entry["type"] as? String == "file",
+                    (entry["path"] as! String).hasSuffix(".safetensors")
+                else { return nil }
+                let path = entry["path"] as! String
+                let lfsSize = (entry["lfs"] as? [String: Any])?["size"] as? Int
+                let size = lfsSize ?? (entry["size"] as? Int)
+                return size.map { (path, $0) }
+            }
+
+        guard !expected.isEmpty else { throw ModelValidationError.noWeightFiles }
+
+        var missing: [String] = []
+        var mismatches: [String] = []
+        for (path, expectedSize) in expected {
+            // Snapshot entries are symlinks into the blob store — resolve
+            // before asking for the size, or you measure the link itself.
+            let url = directory.appendingPathComponent(path)
+                .resolvingSymlinksInPath()
+            let actual =
+                (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int)
+                ?? nil
+            if actual == nil {
+                missing.append(path)
+            } else if actual != expectedSize {
+                mismatches.append(path)
+            }
+        }
+        if !missing.isEmpty || !mismatches.isEmpty {
+            throw ModelValidationError.incompleteSnapshot(
+                missing: missing, sizeMismatches: mismatches)
+        }
+
+        for (path, _) in expected {
+            _ = try safetensorsTensorNames(
+                at: directory.appendingPathComponent(path),
+                fileName: path)
+        }
+    }
+
+    /// First page of `GET /api/models/{id}/tree/{revision}?recursive=true`.
+    /// The model repos in use have well under one page of files.
+    nonisolated private static func fetchTreeEntries() async throws -> [[String: Any]] {
+        var components = URLComponents()
+        components.scheme = "https"
+        components.host = "huggingface.co"
+        components.path = "/api/models/\(modelID)/tree/main"
+        components.queryItems = [URLQueryItem(name: "recursive", value: "true")]
+        guard let url = components.url else {
+            throw ModelValidationError.treeListingFailed("bad URL")
+        }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        let (data, response): (Data, URLResponse)
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw ModelValidationError.treeListingFailed(error.localizedDescription)
+        }
+        guard let http = response as? HTTPURLResponse, http.statusCode == 200,
+            let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]]
+        else {
+            throw ModelValidationError.treeListingFailed(
+                "HTTP \((response as? HTTPURLResponse)?.statusCode ?? -1)")
+        }
+        return json
+    }
+
+    /// Tensor names from a safetensors file header (first 8 bytes = header
+    /// length, then JSON). Only the header is read — a few MB at most.
+    nonisolated private static func safetensorsTensorNames(at url: URL, fileName: String) throws -> Set<String> {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+
+        guard let lengthBytes = try handle.read(upToCount: 8), lengthBytes.count == 8 else {
+            throw ModelValidationError.corruptWeightFile(fileName)
+        }
+        let headerLength = lengthBytes.reversed().reduce(0) { ($0 << 8) + UInt64($1) }  // little-endian
+        guard headerLength >= 2, headerLength < 64_000_000 else {
+            throw ModelValidationError.corruptWeightFile(fileName)
+        }
+        guard
+            let headerData = try handle.read(upToCount: Int(headerLength)),
+            headerData.count == Int(headerLength),
+            let json = try? JSONSerialization.jsonObject(with: headerData) as? [String: Any]
+        else {
+            throw ModelValidationError.corruptWeightFile(fileName)
+        }
+        return Set(json.keys.filter { $0 != "__metadata__" })
+    }
+
+    /// Removes the HF cache for this repo so a corrupted/partial snapshot
+    /// can't come back. HF cache dirs are named `models--org--name` (the
+    /// `models--` kind prefix included) under `~/.cache/huggingface/hub`.
+    nonisolated static func wipeRepoCache() throws {
+        let cacheRoot = URL.homeDirectory
+            .appendingPathComponent(".cache/huggingface/hub")
+        let repoDir = cacheRoot.appendingPathComponent(
+            "models--" + Self.modelID.replacingOccurrences(of: "/", with: "--"))
+        guard FileManager.default.fileExists(atPath: repoDir.path) else { return }
+        try FileManager.default.removeItem(at: repoDir)
+    }
+
+    private func handleProgress(_ progress: Progress) {
+        guard case .downloading = phase else { return }
+        let total = progress.totalUnitCount > 0
+            ? progress.totalUnitCount : Self.approximateBytes
+        guard total > 0, progress.completedUnitCount > 0 else { return }
+
+        if progress.completedUnitCount >= total {
+            // Bytes are all in — what remains is unquantize + GPU upload.
+            phase = .loading
+        } else {
+            phase = .downloading(totalBytes: total, receivedBytes: progress.completedUnitCount)
+        }
+    }
+}

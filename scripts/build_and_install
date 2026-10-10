@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+#
+# build_and_install — build PhotoTagger locally, install to ~/Applications, launch.
+#
+#   ./scripts/build_and_install            # Debug build, install, launch
+#   ./scripts/build_and_install release    # Release build
+#   ./scripts/build_and_install build-only # Build but don't install/launch
+#   ./scripts/build_and_install test       # Build + run unit tests
+#   ./scripts/build_and_install clean      # Wipe derived data + generated project
+#
+# Requires: Xcode command-line tools (xcodebuild). Installs XcodeGen via Homebrew on first run.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+CONFIG="Debug"
+DO_INSTALL=true
+DO_LAUNCH=true
+case "${1:-}" in
+  release)    CONFIG="Release" ;;
+  build-only) DO_INSTALL=false; DO_LAUNCH=false ;;
+  test)       DO_INSTALL=false; DO_LAUNCH=false ;;
+  clean)
+    echo "==> Cleaning"
+    rm -rf "$ROOT_DIR/build" "$ROOT_DIR/PhotoTagger.xcodeproj"
+    echo "Done."
+    exit 0
+    ;;
+  *) ;;
+esac
+
+APP_NAME="PhotoTagger"
+SCHEME="PhotoTagger"
+PROJECT="$ROOT_DIR/PhotoTagger.xcodeproj"
+DERIVED="$ROOT_DIR/build"
+
+# --- 1. XcodeGen (generate the .xcodeproj from project.yml) --------------------
+if ! command -v xcodegen >/dev/null 2>&1; then
+  echo "==> XcodeGen not found — installing via Homebrew…"
+  if ! command -v brew >/dev/null 2>&1; then
+    echo "Homebrew is required (https://brew.sh). Install it, then re-run." >&2
+    exit 1
+  fi
+  brew install xcodegen
+fi
+echo "==> Generating Xcode project"
+xcodegen generate 2>&1 | sed 's/^/    /'
+
+# --- 2. Build ------------------------------------------------------------------
+# MLX compiles Metal shaders; Xcode 26+ ships the Metal toolchain as a
+# separate download. Install it if the metal compiler is missing.
+if ! xcrun --find metal >/dev/null 2>&1; then
+  echo "==> Metal Toolchain missing — downloading (one time, ~840 MB)"
+  xcodebuild -downloadComponent MetalToolchain
+fi
+
+echo "==> Building ($CONFIG) — first build compiles MLX, expect several minutes"
+set -o pipefail
+ACTION="build"
+if [[ "${1:-}" == "test" ]]; then
+  ACTION="test"
+fi
+xcodebuild \
+  -project "$PROJECT" \
+  -scheme "$SCHEME" \
+  -configuration "$CONFIG" \
+  -derivedDataPath "$DERIVED" \
+  $(if [[ "$ACTION" == "test" ]]; then echo "-destination platform=macOS"; else echo "-destination generic/platform=macOS"; fi) \
+  CODE_SIGN_IDENTITY="-" \
+  CODE_SIGNING_REQUIRED=NO \
+  CODE_SIGNING_ALLOWED=YES \
+  "$ACTION" \
+  2>&1 | sed 's/^/    /' || { echo "Build failed." >&2; exit 1; }
+
+if [[ "$ACTION" == "test" ]]; then
+  echo "==> Tests passed"
+  exit 0
+fi
+
+BUILT_APP="$DERIVED/Build/Products/$CONFIG/$APP_NAME.app"
+if [[ ! -d "$BUILT_APP" ]]; then
+  echo "Built app not found at: $BUILT_APP" >&2
+  exit 1
+fi
+echo "==> Built: $BUILT_APP"
+
+# --- 3. Install + launch -------------------------------------------------------
+DEST_APP=""
+if $DO_INSTALL; then
+  DEST_DIR="$HOME/Applications"
+  mkdir -p "$DEST_DIR"
+  DEST_APP="$DEST_DIR/$APP_NAME.app"
+  echo "==> Installing to $DEST_APP"
+  # Quit a running copy so the bundle can be replaced cleanly
+  # (and so the AI model in memory is released before the swap).
+  pkill -x "$APP_NAME" 2>/dev/null || true
+  sleep 1
+  rm -rf "$DEST_APP"
+  cp -R "$BUILT_APP" "$DEST_APP"
+  # Strip quarantine so the app runs without Gatekeeper prompts (local dev build).
+  xattr -dr com.apple.quarantine "$DEST_APP" 2>/dev/null || true
+fi
+
+if $DO_LAUNCH; then
+  echo "==> Launching"
+  if [[ -n "$DEST_APP" ]]; then
+    open "$DEST_APP"
+  else
+    open "$BUILT_APP"
+  fi
+fi
