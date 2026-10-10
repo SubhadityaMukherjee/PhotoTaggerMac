@@ -10,6 +10,7 @@
 		0A80170387F645296F38E4C9 /* TaggedAssetStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 11AD10EF32E038A16657828C /* TaggedAssetStore.swift */; };
 		1CCDCFA0000AB3B35BD526C6 /* Bridges.swift in Sources */ = {isa = PBXBuildFile; fileRef = E4A87C90DF89C3CB80DA2423 /* Bridges.swift */; };
 		1F8DF05F999E64DDE488E162 /* PhotoTaggerEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00E2F085905F7D32EB857371 /* PhotoTaggerEngine.swift */; };
+		2ABCE848C8D789483A018BD5 /* DebugView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 957B09A06DFBC3C7D8AEDAD7 /* DebugView.swift */; };
 		43C84521B4969E6551400F1A /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9E2D4C708AB55A6D7DEDDBD4 /* ContentView.swift */; };
 		518CFAB11E7CBBC9F465CAB6 /* PhotoTaggerApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5536634E758EE1EA45CB40D9 /* PhotoTaggerApp.swift */; };
 		5325881E2FAB87B5D893ABFB /* RunView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC943000007F9130EC93ABB6 /* RunView.swift */; };
@@ -20,6 +21,7 @@
 		8CF6BF213530AC5AAE8198EF /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A2D0A844C65311102F0CFA71 /* Assets.xcassets */; };
 		9B36DFE4A8FCDE9B4F12C272 /* HuggingFace in Frameworks */ = {isa = PBXBuildFile; productRef = 4F0C2C043C6199FC1FEE0266 /* HuggingFace */; };
 		9B826924CAAD8A310DED2FFA /* MLXLMCommon in Frameworks */ = {isa = PBXBuildFile; productRef = 9999B7B8C1008D6E2F261ADB /* MLXLMCommon */; };
+		AB381811BF733ED8D7D87E33 /* DebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90DBFCCC5F2E40403861DDFE /* DebugLog.swift */; };
 		B5739FCBA1C1056D925B870D /* ModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 354429D28A4D35E4EF85B3BD /* ModelStore.swift */; };
 		C8FC8A042CC640B6B08ACF50 /* TagParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 325C667DE4E7FFEF85293271 /* TagParserTests.swift */; };
 		D131B9473DA174B1DEE9FE35 /* TagParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = B04645895D9E25ED2389B26A /* TagParser.swift */; };
@@ -45,6 +47,8 @@
 		354429D28A4D35E4EF85B3BD /* ModelStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ModelStore.swift; sourceTree = "<group>"; };
 		5536634E758EE1EA45CB40D9 /* PhotoTaggerApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhotoTaggerApp.swift; sourceTree = "<group>"; };
 		57B90F0673188B6846526CE3 /* PhotoTaggerTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = PhotoTaggerTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		90DBFCCC5F2E40403861DDFE /* DebugLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugLog.swift; sourceTree = "<group>"; };
+		957B09A06DFBC3C7D8AEDAD7 /* DebugView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DebugView.swift; sourceTree = "<group>"; };
 		9CEE6345BB49A065A698C70B /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		9E2D4C708AB55A6D7DEDDBD4 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
 		A2D0A844C65311102F0CFA71 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
@@ -84,6 +88,7 @@
 			children = (
 				FC0225583942BC89C1FA8480 /* AlbumDetailView.swift */,
 				9E2D4C708AB55A6D7DEDDBD4 /* ContentView.swift */,
+				957B09A06DFBC3C7D8AEDAD7 /* DebugView.swift */,
 				AC943000007F9130EC93ABB6 /* RunView.swift */,
 			);
 			path = Views;
@@ -93,6 +98,7 @@
 			isa = PBXGroup;
 			children = (
 				9CEE6345BB49A065A698C70B /* AppModel.swift */,
+				90DBFCCC5F2E40403861DDFE /* DebugLog.swift */,
 				5536634E758EE1EA45CB40D9 /* PhotoTaggerApp.swift */,
 			);
 			path = App;
@@ -270,6 +276,8 @@
 				64C23461EAF5FF3A3126D0DC /* AppModel.swift in Sources */,
 				1CCDCFA0000AB3B35BD526C6 /* Bridges.swift in Sources */,
 				43C84521B4969E6551400F1A /* ContentView.swift in Sources */,
+				AB381811BF733ED8D7D87E33 /* DebugLog.swift in Sources */,
+				2ABCE848C8D789483A018BD5 /* DebugView.swift in Sources */,
 				B5739FCBA1C1056D925B870D /* ModelStore.swift in Sources */,
 				8C8813C32A8FC523962E3A6B /* PhotoLibraryService.swift in Sources */,
 				518CFAB11E7CBBC9F465CAB6 /* PhotoTaggerApp.swift in Sources */,

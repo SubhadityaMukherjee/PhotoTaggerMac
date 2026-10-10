@@ -57,11 +57,11 @@ final class ModelStore {
                 let container = try await self.loadFromHub()
                 self.container = container
                 self.phase = .ready
-                NSLog("PhotoTagger: model ready")
+                DebugLog.shared.info("Model", "Model ready — \(Self.modelDisplayName)")
             } catch is CancellationError {
                 if self.container == nil { self.phase = .notLoaded }
             } catch {
-                NSLog("PhotoTagger: model load failed: \(error)")
+                DebugLog.shared.error("Model", "Model load failed: \(error)")
                 if self.container == nil {
                     self.phase = .failed(error.localizedDescription)
                 }
@@ -90,6 +90,9 @@ final class ModelStore {
             return try await loadModelContainer(from: directory, using: loader)
         } catch {
             guard error is ModelValidationError else { throw error }
+            DebugLog.shared.warning(
+                "Model",
+                "Downloaded model snapshot failed validation (\(error.localizedDescription)) — clearing the cache and retrying once")
             try Self.wipeRepoCache()
             let directory = try await downloadValidated(downloader)
             return try await loadModelContainer(from: directory, using: loader)

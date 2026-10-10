@@ -15,5 +15,12 @@ struct PhotoTaggerApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) {}  // no document new-window churn
+            CommandGroup(after: .toolbar) {
+                Toggle("Show Debug Panel", isOn: Binding(
+                    get: { appModel.showDebugPanel },
+                    set: { appModel.showDebugPanel = $0 }
+                ))
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+            }
         }
     }}

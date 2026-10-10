@@ -110,10 +110,10 @@ Open Photos and just type in the search bar — `lake`, `yellow shirt`, `birthda
 
 ```
 Sources/
-  App/        App entry point, central app model / run loop, self-test hook
+  App/        App entry point, central app model / run loop, in-app debug log, self-test hook
   Photos/     PhotoKit service (albums, image loading, keyword writes), tagged-asset store
   AI/         Model download/load/validate (MLX + Hugging Face hub), hub bridges, tagging engine, tag parser
-  Views/      Album picker, album detail, live run view, model status footer
+  Views/      Album picker, album detail, live run view, debug pane, model status footer
 Tests/        Tag parser unit tests
 scripts/      build_and_install (auto-installs Xcode's Metal toolchain on first run)
 ```
@@ -126,6 +126,8 @@ scripts/      build_and_install (auto-installs Xcode's Metal toolchain on first 
 
 ## Troubleshooting
 
+- **In-app debug log** — the sidebar has a hidden *Developer → Debug Log* section. Reveal it with **View ▸ Show Debug Panel (⇧⌘D)**. It records every error and warning live (model load failures, per-photo failures with the asset id, Photos write retries, tag-parse misses), with a red badge on the sidebar row counting errors since the last clear. Use *Copy All* to export the log as text; every entry is also mirrored to the console (`log show --predicate 'process == "PhotoTagger"' --last 15m`).
+- **“Model produced no usable tags”** — the VLM sometimes drops the commas and answers with a plain run of tag words ("family boat trip ocean sunny"). The tag parser detects that shape and salvages the individual words as keywords (linking words like "in"/"with" are filtered, prose answers are left alone), so these photos now tag normally instead of failing.
 - **“Photos rejected the keyword change: Photos error NNNN (…)”** — the number identifies the cause: `3300 changeNotSupported` / `3306 requestNotSupportedForAsset` usually mean the photo is read-only in Photos (shared iCloud albums) — those are now skipped automatically and never retried; `3301 operationInterrupted` is transient and retried once; `3307 limitExceeded` retries with a trimmed tag set; `3164 networkAccessRequired` / `3169 networkError` mean the iCloud original couldn't be fetched — the photo is counted failed and picked up on a later run. Every failure is also written to the console log: `log show --predicate 'process == "PhotoTagger"' --last 15m`.
 - **“The model download was incomplete … The cached copy was cleared”** — a transient network failure. Just click Tag All again; the app wipes the bad cache and re-downloads. Weights live in `~/.cache/huggingface/hub/models--mlx-community--Qwen3-VL-8B-Instruct-4bit` (~5.4 GB) if you ever want to reclaim the space.
 - **Download seems stuck** — the big shard (4.9 GB) buffers into a hidden `CFNetworkDownload_*.tmp` file under `/var/folders/.../T/` before materializing in the cache, so cache size can sit still for minutes while bytes flow. Give it time on slow links (~10 min at 10 MB/s).

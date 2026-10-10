@@ -301,9 +301,14 @@ final class PhotoLibraryService {
                 throw PhotoLibraryError.changeFailed(describe(error))
             }
 
+            let fileName = PhotoLibraryService.displayName(for: asset) ?? "photo"
+
             // Transient library hiccups: one retry after a beat.
             let transient = [-1, 3301]  // internalError, operationInterrupted
             if transient.contains(ns.code) {
+                DebugLog.shared.warning(
+                    "Photos",
+                    "\(fileName): transient \(describe(error)) — retrying once (\(asset.localIdentifier))")
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 do {
                     try await performKeywordChange(tags, for: asset)
@@ -316,6 +321,9 @@ final class PhotoLibraryService {
             // Per-asset keyword limit: retry with a trimmed set instead of
             // losing the photo entirely.
             if ns.code == 3307, tags.count > 6 {
+                DebugLog.shared.warning(
+                    "Photos",
+                    "\(fileName): keyword limit exceeded with \(tags.count) tags — retrying with the first 6 (\(asset.localIdentifier))")
                 do {
                     try await performKeywordChange(Array(tags.prefix(6)), for: asset)
                     return true

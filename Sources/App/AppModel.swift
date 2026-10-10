@@ -36,11 +36,26 @@ final class AppModel {
         var skippedReadOnly = 0
     }
 
+    /// Pseudo-id for the hidden developer pane selected from the sidebar.
+    static let debugSidebarID = "__debug__"
+
     // MARK: - State
 
     private(set) var accessPhase: AccessPhase = .checking
     private(set) var albums: [AlbumSummary] = []
     var selectedAlbumID: String?
+
+    /// Whether the Debug Log section appears in the sidebar. Off by
+    /// default; toggled via View ▸ Show Debug Panel (⇧⌘D).
+    var showDebugPanel = false {
+        didSet {
+            if !showDebugPanel, selectedAlbumID == Self.debugSidebarID {
+                selectedAlbumID = nil
+                selectedAssets = nil
+                taggedCount = 0
+            }
+        }
+    }
 
     private(set) var selectedAssets: AlbumAssets?
     /// How many photos in the selected album this app has already tagged.
@@ -72,6 +87,15 @@ final class AppModel {
         //   -preloadModel              download + load the model immediately
         //   -selfTestImage <path.jpg>  tag one image, log the result, quit
         let args = CommandLine.arguments
+        if args.contains("-diagnoseWrites") {
+            Task { await diagnoseWrites() }
+            return
+        }
+        if args.contains("-tagFirstPhoto") {
+            modelStore.startLoadingIfNeeded()
+            Task { await tagFirstPhoto() }
+            return
+        }
         if let idx = args.firstIndex(of: "-selfTestImage"), idx + 1 < args.count {
             let path = args[idx + 1]
             modelStore.startLoadingIfNeeded()
@@ -98,11 +122,20 @@ final class AppModel {
 
     func refreshAlbums() {
         albums = library.fetchAlbums()
-        if let id = selectedAlbumID, !albums.contains(where: { $0.id == id }) {
+        if let id = selectedAlbumID, id != Self.debugSidebarID,
+            !albums.contains(where: { $0.id == id })
+        {
             selectedAlbumID = nil
             selectedAssets = nil
             taggedCount = 0
         }
+    }
+
+    /// Shows the developer log pane (sidebar → Debug Log).
+    func selectDebugPane() {
+        selectedAlbumID = Self.debugSidebarID
+        selectedAssets = nil
+        taggedCount = 0
     }
 
     func select(_ album: AlbumSummary?) {
@@ -168,15 +201,29 @@ final class AppModel {
     }
 
     private func runLoop(targets: [PHAsset]) async {
+        let log = DebugLog.shared
+        log.info("Run", "Tagging \(targets.count) photos in “\(runAlbumTitle)”")
         defer {
             runIsActive = false
             stopRequested = false
             store.flush()
             currentThumbnail = nil
             runTask = nil
+            if Task.isCancelled {
+                log.warning("Run", "Stopped by user after \(runStats.done) of \(runStats.total) photos")
+            } else {
+                log.info(
+                    "Run",
+                    "Finished: \(runStats.done) tagged, \(runStats.failed) failed, "
+                        + "\(runStats.skippedReadOnly) read-only skipped in "
+                        + "\(Int(runElapsed.rounded()))s"
+                )
+            }
             // Refresh the selected album so "already tagged" counts reflect
             // what just happened.
-            if let id = selectedAlbumID, let album = albums.first(where: { $0.id == id }) {
+            if let id = selectedAlbumID, id != Self.debugSidebarID,
+                let album = albums.first(where: { $0.id == id })
+            {
                 select(album)
             }
         }
@@ -188,6 +235,7 @@ final class AppModel {
             if Task.isCancelled { return }
             if case .failed(let message) = modelStore.phase {
                 lastFailureMessage = "Could not load the AI model: \(message)"
+                log.error("Model", "Run aborted — could not load the AI model: \(message)")
                 return
             }
             try? await Task.sleep(nanoseconds: 200_000_000)
@@ -204,6 +252,10 @@ final class AppModel {
             if !asset.canPerform(.properties) {
                 store.insertReadOnly(asset.localIdentifier)
                 runStats.skippedReadOnly += 1
+                log.info(
+                    "Photos",
+                    "\(PhotoLibraryService.displayName(for: asset) ?? "photo") is read-only — skipped (\(asset.localIdentifier))"
+                )
                 continue
             }
 
@@ -221,6 +273,10 @@ final class AppModel {
                 let tags = TagParser.parse(raw)
                 guard !tags.isEmpty else {
                     runStats.failed += 1
+                    log.warning(
+                        "Model",
+                        "\(currentFileName ?? "photo"): model produced no usable tags — "
+                            + "raw answer: \(raw.prefix(300))")
                     continue
                 }
 
@@ -238,12 +294,15 @@ final class AppModel {
                     // Shared-album / restricted photos: expected, not a failure.
                     store.insertReadOnly(asset.localIdentifier)
                     runStats.skippedReadOnly += 1
+                    log.info(
+                        "Photos",
+                        "\(currentFileName ?? "photo") is read-only — skipped (\(asset.localIdentifier))")
                 } else {
                     runStats.failed += 1
                     lastFailureMessage = "\(currentFileName ?? "photo"): \(error.localizedDescription)"
-                    NSLog(
-                        "PhotoTagger: write failed for \(currentFileName ?? "?") (\(asset.localIdentifier)): \(error)"
-                    )
+                    log.error(
+                        "Photos",
+                        "write failed for \(currentFileName ?? "?") (\(asset.localIdentifier)): \(error)")
                 }
             } catch is CancellationError {
                 break
@@ -251,14 +310,107 @@ final class AppModel {
                 // Per-photo failures shouldn't kill the run.
                 runStats.failed += 1
                 lastFailureMessage = "\(currentFileName ?? "photo"): \(error.localizedDescription)"
-                NSLog(
-                    "PhotoTagger: photo failed \(currentFileName ?? "?") (\(asset.localIdentifier)): \(error)"
-                )
+                log.error(
+                    "Run",
+                    "photo failed \(currentFileName ?? "?") (\(asset.localIdentifier)): \(error)")
             }
         }
     }
 
+    /// Full end-to-end pipeline on the first photo of the real library:
+    /// load image → model → parse → write keywords. This is exactly what the
+    /// Tag All loop does, for one photo. Launched via `-tagFirstPhoto`.
+    private func tagFirstPhoto() async {
+        let options = PHFetchOptions()
+        options.predicate = NSPredicate(
+            format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        options.fetchLimit = 1
+        guard let asset = PHAsset.fetchAssets(with: options).firstObject else {
+            NSLog("PhotoTagger e2e: no image assets in library")
+            exit(1)
+        }
+        NSLog(
+            "PhotoTagger e2e: asset \(asset.localIdentifier) canPerform(.properties)=\(asset.canPerform(.properties))"
+        )
+
+        do {
+            var container: ModelContainer? = modelStore.containerIfReady
+            while container == nil {
+                if case .failed(let message) = modelStore.phase {
+                    NSLog("PhotoTagger e2e: model failed: \(message)")
+                    exit(1)
+                }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                container = modelStore.containerIfReady
+            }
+
+            let started = Date()
+            let image = try await library.loadImage(for: asset)
+            NSLog("PhotoTagger e2e: image loaded (\(image.width)×\(image.height))")
+
+            let raw = try await PhotoTaggerEngine(container: container!).rawTags(for: image)
+            let tags = TagParser.parse(raw)
+            NSLog("PhotoTagger e2e: model said: \(raw)")
+            NSLog("PhotoTagger e2e: parsed tags: \(tags)")
+
+            try await library.addKeywords(tags, to: asset)
+            NSLog("PhotoTagger e2e: keywords WRITTEN in %.1fs total", Date().timeIntervalSince(started))
+            exit(0)
+        } catch {
+            NSLog("PhotoTagger e2e: FAILED \(error as NSError)")
+            exit(1)
+        }
+    }
+
     // MARK: - Self test
+
+    /// Diagnoses the keyword-write path against the real library without
+    /// writing anything: reports authorization, capability flags, and runs a
+    /// no-op performChanges. Launched via `-diagnoseWrites`.
+    private func diagnoseWrites() async {
+        let status = library.status
+        NSLog("PhotoTagger diag: authorization = \(status.rawValue)")
+
+        let options = PHFetchOptions()
+        options.predicate = NSPredicate(
+            format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        options.fetchLimit = 5
+        let fetch = PHAsset.fetchAssets(with: options)
+        NSLog("PhotoTagger diag: sampling \(fetch.count) image assets")
+
+        fetch.enumerateObjects { asset, idx, _ in
+            NSLog(
+                "PhotoTagger diag[\(idx)]: \(asset.localIdentifier) mediaSubtypes=\(asset.mediaSubtypes.rawValue) source=\(asset.sourceType.rawValue) canPerform(.properties)=\(asset.canPerform(.properties)) canPerform(.content)=\(asset.canPerform(.content)) canPerform(.delete)=\(asset.canPerform(.delete))"
+            )
+        }
+
+        // No-op change: exercises the write authorization path while
+        // touching nothing.
+        do {
+            try await PHPhotoLibrary.shared().performChanges {}
+            NSLog("PhotoTagger diag: no-op performChanges OK")
+        } catch {
+            NSLog("PhotoTagger diag: no-op performChanges FAILED: \(error as NSError)")
+        }
+
+        // One real keyword write to the first asset, then remove it in the
+        // same transaction-style follow-up, so we can see the true error.
+        if let asset = fetch.firstObject {
+            do {
+                try await PHPhotoLibrary.shared().performChanges {
+                    PHAssetChangeRequest(for: asset).addKeyword("phototagger diag")
+                }
+                NSLog("PhotoTagger diag: keyword write OK — now removing test keyword")
+                try await PHPhotoLibrary.shared().performChanges {
+                    PHAssetChangeRequest(for: asset).removeKeyword("phototagger diag")
+                }
+                NSLog("PhotoTagger diag: test keyword removed — everything works")
+            } catch {
+                NSLog("PhotoTagger diag: keyword write FAILED: \(error as NSError)")
+            }
+        }
+        exit(0)
+    }
 
     /// Tags a single image file end-to-end (model → prompt → parse) and logs
     /// the result. Used via `-selfTestImage <path>` to verify releases.

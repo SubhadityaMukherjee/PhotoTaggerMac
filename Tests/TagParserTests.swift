@@ -110,4 +110,43 @@ final class TagParserTests: XCTestCase {
             TagParser.parse("black and white, portrait, studio"),
             ["black and white", "portrait", "studio"])
     }
+
+    // MARK: - Comma-less answers (model dropped the separators)
+
+    func testSpaceSeparatedFallback() {
+        // Real answer from the log: no commas at all.
+        XCTAssertEqual(
+            TagParser.parse("family boat trip ocean sunny vacation group photo"),
+            ["family", "boat", "trip", "ocean", "sunny", "vacation", "group"])
+    }
+
+    func testSpaceSeparatedFallbackFiltersLinkingWords() {
+        XCTAssertEqual(
+            TagParser.parse("nun in orange robe standing indoors with curtains"),
+            ["nun", "orange", "robe", "standing", "indoors", "curtains"])
+    }
+
+    func testSpaceSeparatedFallbackCapsAtMaxTags() {
+        // Real answer from the log: 17 content words → capped at 12.
+        let raw =
+            "three men praying floor ritual indian ceremony white dhoti yellow shirt marigold flowers banana leaves"
+        let tags = TagParser.parse(raw)
+        XCTAssertEqual(tags.count, 12)
+        XCTAssertEqual(tags.prefix(5), ["men", "praying", "floor", "ritual", "indian"])
+    }
+
+    func testSpaceSeparatedFallbackWithTrailingNewline() {
+        XCTAssertEqual(TagParser.parse("mother son dinner restaurant smiling glasses\n"),
+                       ["mother", "son", "dinner", "restaurant", "smiling", "glasses"])
+    }
+
+    func testProseWithPeriodIsNotWordSplit() {
+        XCTAssertEqual(TagParser.parse("the photo shows a smiling family at the beach."), [])
+    }
+
+    func testCommaAnswerStillRejectsLongSegments() {
+        // A comma-formatted answer keeps the old rule: an over-long segment
+        // is dropped, not split into words.
+        XCTAssertEqual(TagParser.parse("this tag has way too many words inside it, lake"), ["lake"])
+    }
 }

@@ -43,29 +43,30 @@ private struct AlbumSidebar: View {
 
     @Environment(AppModel.self) private var model
 
+    private let debugLog = DebugLog.shared
+
     var body: some View {
-        List(model.albums, selection: Binding(
+        List(selection: Binding(
             get: { model.selectedAlbumID },
             set: { id in
-                if let id, let album = model.albums.first(where: { $0.id == id }) {
+                if id == AppModel.debugSidebarID {
+                    model.selectDebugPane()
+                } else if let id, let album = model.albums.first(where: { $0.id == id }) {
                     model.select(album)
                 }
             }
-        )) { album in
-            HStack {
-                Label(
-                    album.title,
-                    systemImage: album.isAllPhotos
-                        ? "photo.on.rectangle.angled" : album.isSmartAlbum ? "sparkles" : "rectangle.stack"
-                )
-                .lineLimit(1)
-                Spacer()
-                Text("\(album.assetCount)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+        )) {
+            ForEach(model.albums) { album in
+                albumRow(album)
             }
-            .tag(album.id)
+
+            // Hidden developer section — visible only after enabling
+            // View ▸ Show Debug Panel (⇧⌘D).
+            if model.showDebugPanel {
+                Section("Developer") {
+                    debugRow
+                }
+            }
         }
         .navigationTitle("Albums")
         .overlay {
@@ -93,6 +94,42 @@ private struct AlbumSidebar: View {
             }
         }
     }
+
+    private func albumRow(_ album: AlbumSummary) -> some View {
+        HStack {
+            Label(
+                album.title,
+                systemImage: album.isAllPhotos
+                    ? "photo.on.rectangle.angled" : album.isSmartAlbum ? "sparkles" : "rectangle.stack"
+            )
+            .lineLimit(1)
+            Spacer()
+            Text("\(album.assetCount)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+        }
+        .tag(album.id)
+    }
+
+    private var debugRow: some View {
+        HStack {
+            Label("Debug Log", systemImage: "ladybug")
+                .lineLimit(1)
+            Spacer()
+            if debugLog.errorCount > 0 {
+                Text("\(debugLog.errorCount)")
+                    .font(.caption.bold())
+                    .monospacedDigit()
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(.red, in: Capsule())
+                    .help("Errors recorded since the log was last cleared")
+            }
+        }
+        .tag(AppModel.debugSidebarID)
+    }
 }
 
 // MARK: - Detail pane
@@ -103,7 +140,11 @@ private struct DetailPane: View {
 
     var body: some View {
         Group {
-            if model.runIsActive {
+            // An explicit Debug Log selection wins over run routing so
+            // errors can be watched live while a run is going.
+            if model.selectedAlbumID == AppModel.debugSidebarID {
+                DebugView()
+            } else if model.runIsActive {
                 RunView()
             } else if let assets = model.selectedAssets {
                 AlbumDetailView(assets: assets)

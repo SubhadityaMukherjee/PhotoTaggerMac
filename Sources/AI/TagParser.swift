@@ -3,9 +3,10 @@ import Foundation
 /// Normalizes raw vision-model output into clean, Photos-searchable keywords.
 ///
 /// The model is asked for a comma-separated list, but real output can contain
-/// thinking blocks, markdown, JSON, or bulleted lists — every format that has
-/// shown up in testing is handled here so a malformed answer never writes junk
-/// keywords into the photo library.
+/// thinking blocks, markdown, JSON, bulleted lists — or no separators at all,
+/// just a run of tag words ("family boat trip ocean sunny"). Every format
+/// that has shown up in testing is handled here so a malformed answer never
+/// writes junk keywords into the photo library.
 enum TagParser {
 
     struct Options {
@@ -30,6 +31,20 @@ enum TagParser {
     private static let codeFence = try! NSRegularExpression(
         pattern: #"`{1,3}"#, options: [])
 
+    /// Words that are fine *inside* a tag ("woman in red", "man with
+    /// glasses") but useless as standalone keywords — filtered only while
+    /// salvaging a comma-less answer into single-word tags.
+    private static let splitFillers: Set<String> = [
+        "a", "an", "the", "this", "that", "these", "those",
+        "in", "on", "at", "of", "by", "as", "or", "and", "with",
+        "over", "under", "into", "onto", "near", "beside", "for", "from",
+        "is", "are", "was", "were", "be", "been", "being",
+        "has", "have", "had", "do", "does", "did",
+        "it", "its", "his", "her", "she", "he", "they", "their",
+        "wearing", "wears", "two", "three", "several", "some",
+        "while", "during", "there", "here", "shows", "showing",
+    ]
+
     static func parse(_ raw: String, options: Options = Options()) -> [String] {
         var text = stripThinking(raw)
         text = stripWrappers(text)
@@ -42,7 +57,28 @@ enum TagParser {
         let candidates = text.components(
             separatedBy: CharacterSet(charactersIn: ",;\n\r•·|")
         )
-        return clean(candidates, options: options)
+        let tags = clean(candidates, options: options)
+        guard tags.isEmpty else { return tags }
+
+        // The model sometimes drops the commas and answers with a plain run
+        // of tag words ("family boat trip ocean sunny"). That whole run is a
+        // single over-long candidate above and yields nothing, so before
+        // giving up, treat each word as its own tag. Only when the answer is
+        // one separator-free run (a comma'd answer keeps its long-segment
+        // rejection) and carries no sentence punctuation (prose stays out);
+        // linking words that never make useful standalone keywords are
+        // dropped via `splitFillers`.
+        let nonEmpty = candidates.filter {
+            !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        if nonEmpty.count == 1, !text.contains(where: { ".!?".contains($0) }) {
+            var wordOptions = options
+            wordOptions.fillers = options.fillers.union(splitFillers)
+            return clean(
+                nonEmpty[0].components(separatedBy: .whitespacesAndNewlines),
+                options: wordOptions)
+        }
+        return tags
     }
 
     // MARK: - Steps
