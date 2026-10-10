@@ -53,8 +53,12 @@ private struct AlbumSidebar: View {
             }
         )) { album in
             HStack {
-                Label(album.title, systemImage: album.isSmartAlbum ? "sparkles" : "rectangle.stack")
-                    .lineLimit(1)
+                Label(
+                    album.title,
+                    systemImage: album.isAllPhotos
+                        ? "photo.on.rectangle.angled" : album.isSmartAlbum ? "sparkles" : "rectangle.stack"
+                )
+                .lineLimit(1)
                 Spacer()
                 Text("\(album.assetCount)")
                     .font(.caption)

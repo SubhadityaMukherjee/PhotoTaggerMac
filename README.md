@@ -6,12 +6,26 @@ Author: **Subhaditya Mukherjee**
 
 ## What it does
 
-- **Album picker** — lists every album and smart album in your system photo library (Recents, Favorites, your own albums, …) with photo counts.
-- **Tag All** — one click runs [Qwen3-VL 8B](https://huggingface.co/mlx-community/Qwen3-VL-8B-Instruct-4bit) (4-bit) over each photo in the chosen album and adds 5–12 keywords covering the subject, clothing & colors, setting, activity and mood.
+- **All Photos** — a whole-library entry pinned at the top of the sidebar, for tagging everything at once.
+- **Album picker** — every album and smart album in your system photo library (Recents, Favorites, your own albums, …) with photo counts.
+- **Tag All** — one click runs [Qwen3-VL 8B](https://huggingface.co/mlx-community/Qwen3-VL-8B-Instruct-4bit) (4-bit) over each photo in the chosen target and adds 5–12 keywords covering the subject, clothing & colors, setting, activity and mood.
 - **On-device AI** — the model runs in-process via [MLX](https://github.com/ml-explore/mlx-swift), Apple's Metal-based machine-learning framework. Nothing is uploaded anywhere; no API keys.
 - **Search-ready immediately** — keywords are searchable in the Photos app's search field and visible in Get Info (⌘I). If you use iCloud Photos they sync to your other devices.
 - **Never destructive** — pixels are never touched: photos are read, never edited, re-encoded or deleted. The *only* write PhotoTagger ever performs is adding keywords via Photos' additive `addKeyword` API — duplicates are ignored, existing keywords always survive.
 - **Resumable** — already-tagged photos are remembered and skipped, so you can stop any run and click Tag All again later to continue (an option lets you re-tag everything if you want; even then it only merges new keywords in).
+
+## Where the "already tagged" index lives
+
+PhotoTagger remembers which photos it has tagged by storing their Photos `localIdentifier`s in **UserDefaults** under `PhotoTagger.taggedAssetIDs` — this persists across restarts, app updates, and re-builds (it's flushed every 25 photos, at the end of every run, and when the app goes to the background). The keywords themselves live in the Photos library, fully independent of this index.
+
+```sh
+defaults read com.phototagger.app PhotoTagger.taggedAssetIDs   # inspect it
+defaults delete com.phototagger.app PhotoTagger.taggedAssetIDs # make PhotoTagger forget (keywords in Photos stay)
+```
+
+Deleting the index only means everything gets tagged again on the next run — since Photos merges keywords additively, that's harmless (just slow).
+
+> **Note for "All Photos" on iCloud-optimized libraries:** photos whose originals aren't on this Mac are downloaded on demand during the run (one at a time), so a whole-library run may take a long while on slow connections. The Stop button and resumability make long runs painless.
 
 ## First run
 
@@ -108,7 +122,7 @@ scripts/      build_and_install (auto-installs Xcode's Metal toolchain on first 
 
 - The model and all inference are local; your photos never leave the machine.
 - The only photo-library mutation is *adding* keywords via PhotoKit.
-- The tagged-photo memory lives in `UserDefaults` (`PhotoTagger.taggedAssetIDs`) — delete it to make the app forget what it tagged (the keywords in Photos stay).
+- The tagged-photo index lives in `UserDefaults` on this Mac only — see "Where the 'already tagged' index lives" above for how to inspect or clear it.
 
 ## Troubleshooting
 

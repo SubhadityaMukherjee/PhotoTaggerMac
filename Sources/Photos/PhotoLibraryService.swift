@@ -4,10 +4,35 @@ import ImageIO
 import Photos
 
 struct AlbumSummary: Identifiable, Hashable {
-    let id: String  // PHAssetCollection localIdentifier
+    /// Pseudo-id for the whole-library entry ("All Photos"), which is not a
+    /// real PHAssetCollection.
+    static let allPhotosID = "__all_photos__"
+
+    let id: String  // PHAssetCollection localIdentifier, or allPhotosID
     let title: String
     let assetCount: Int
     let isSmartAlbum: Bool
+    let isAllPhotos: Bool
+
+    init(
+        id: String, title: String, assetCount: Int, isSmartAlbum: Bool,
+        isAllPhotos: Bool = false
+    ) {
+        self.id = id
+        self.title = title
+        self.assetCount = assetCount
+        self.isSmartAlbum = isSmartAlbum
+        self.isAllPhotos = isAllPhotos
+    }
+
+    static func allPhotos(imageCount: Int) -> AlbumSummary {
+        AlbumSummary(
+            id: allPhotosID,
+            title: "All Photos",
+            assetCount: imageCount,
+            isSmartAlbum: false,
+            isAllPhotos: true)
+    }
 }
 
 struct AlbumAssets {
@@ -58,11 +83,31 @@ final class PhotoLibraryService {
 
     // MARK: - Albums
 
-    /// User albums followed by smart albums (Recents, Favorites, …),
-    /// both filtered to non-empty.
+    private static func imageFetchOptions() -> PHFetchOptions {
+        let options = PHFetchOptions()
+        options.predicate = NSPredicate(
+            format: "mediaType == %d", PHAssetMediaType.image.rawValue)
+        options.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
+        return options
+    }
+
+    private static func videoCountFetchOptions() -> PHFetchOptions {
+        let options = PHFetchOptions()
+        options.predicate = NSPredicate(
+            format: "mediaType == %d", PHAssetMediaType.video.rawValue)
+        return options
+    }
+
+    /// "All Photos" (the whole library) followed by user albums and smart
+    /// albums (Recents, Favorites, …), all filtered to non-empty.
     func fetchAlbums() -> [AlbumSummary] {
         guard isAuthorized else { return [] }
         var results: [AlbumSummary] = []
+
+        let libraryImages = PHAsset.fetchAssets(with: Self.imageFetchOptions())
+        if libraryImages.count > 0 {
+            results.append(AlbumSummary.allPhotos(imageCount: libraryImages.count))
+        }
 
         let collections = PHAssetCollection.fetchAssetCollections(
             with: .album, subtype: .any, options: nil)
@@ -98,28 +143,37 @@ final class PhotoLibraryService {
         return results
     }
 
-    /// Loads the album's assets, split into photos (to tag) and a video count
-    /// (to report as skipped).
+    /// Loads the target's assets, split into photos (to tag) and a video
+    /// count (to report as skipped). "All Photos" spans the whole library;
+    /// everything else is a PHAssetCollection.
     func fetchAssets(for album: AlbumSummary) -> AlbumAssets {
+        if album.isAllPhotos {
+            let imageFetch = PHAsset.fetchAssets(with: Self.imageFetchOptions())
+            var images: [PHAsset] = []
+            images.reserveCapacity(imageFetch.count)
+            imageFetch.enumerateObjects { asset, _, _ in images.append(asset) }
+
+            let videoCount = PHAsset.fetchAssets(
+                with: Self.videoCountFetchOptions()
+            ).count
+
+            return AlbumAssets(summary: album, images: images, videoCount: videoCount)
+        }
+
         let collections = PHAssetCollection.fetchAssetCollections(
             withLocalIdentifiers: [album.id], options: nil)
         guard let collection = collections.firstObject else {
             return AlbumAssets(summary: album, images: [], videoCount: 0)
         }
 
-        let imageOptions = PHFetchOptions()
-        imageOptions.predicate = NSPredicate(
-            format: "mediaType == %d", PHAssetMediaType.image.rawValue)
-        imageOptions.sortDescriptors = [NSSortDescriptor(key: "creationDate", ascending: true)]
-        let imageFetch = PHAsset.fetchAssets(in: collection, options: imageOptions)
+        let imageFetch = PHAsset.fetchAssets(in: collection, options: Self.imageFetchOptions())
         var images: [PHAsset] = []
         images.reserveCapacity(imageFetch.count)
         imageFetch.enumerateObjects { asset, _, _ in images.append(asset) }
 
-        let videoOptions = PHFetchOptions()
-        videoOptions.predicate = NSPredicate(
-            format: "mediaType == %d", PHAssetMediaType.video.rawValue)
-        let videoCount = PHAsset.fetchAssets(in: collection, options: videoOptions).count
+        let videoCount = PHAsset.fetchAssets(
+            in: collection, options: Self.videoCountFetchOptions()
+        ).count
 
         return AlbumAssets(summary: album, images: images, videoCount: videoCount)
     }

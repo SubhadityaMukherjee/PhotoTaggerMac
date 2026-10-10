@@ -110,6 +110,7 @@ struct AlbumDetailView: View {
                     LabelRow(icon: "sparkles.rectangle.stack", text: "Each photo is analyzed on-device by Qwen3-VL 8B and gets 5–12 keywords (subject, clothing & colors, setting, activity, mood).")
                     LabelRow(icon: "magnifyingglass", text: "Keywords are instantly searchable in the Photos app — try typing “yellow shirt” or “lake” in its search bar.")
                     LabelRow(icon: "checkmark.shield", text: "Photos are never edited, re-encoded, or deleted. The only change is adding keywords, merged with any you set yourself.")
+                    LabelRow(icon: "internaldrive", text: "PhotoTagger has tagged \(model.store.ids.count) photos so far — this index is stored on this Mac and persists across restarts and app updates.")
                 }
                 .padding(4)
             }
