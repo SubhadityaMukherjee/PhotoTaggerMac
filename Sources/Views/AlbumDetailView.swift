@@ -42,7 +42,7 @@ struct AlbumDetailView: View {
             Button("Tag All \(pending) Photos") { model.startTagging(includeAlreadyTagged: includeAlreadyTagged) }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This runs the AI over each photo one at a time and can take a while. You can stop at any point; already-tagged photos are remembered.")
+            Text("This runs the AI over every photo and can take a while. You can stop at any point; already-tagged photos are remembered.")
         }
     }
 
@@ -104,6 +104,50 @@ struct AlbumDetailView: View {
                 }
             }
             .disabled(model.runIsActive)
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    Text("Parallel")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 58, alignment: .leading)
+                    Picker("Parallel", selection: Binding(
+                        get: { model.parallelTagging },
+                        set: { model.parallelTagging = $0 }
+                    )) {
+                        ForEach(1...4, id: \.self) { n in
+                            Text("\(n)×").tag(n)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 150)
+                    .disabled(model.runIsActive)
+                    Text("Photos analyzed at once — faster, but each extra worker needs a few hundred MB of RAM.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+
+                HStack(spacing: 10) {
+                    Text("Detail")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 58, alignment: .leading)
+                    Picker("Detail", selection: Binding(
+                        get: { model.visionDetail },
+                        set: { model.visionDetail = $0 }
+                    )) {
+                        Text("640 · fastest").tag(640)
+                        Text("768").tag(768)
+                        Text("1024 · best").tag(1024)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 220)
+                    .disabled(model.runIsActive)
+                    Text("Image size the AI sees — smaller is faster, with a little less fine detail.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+            }
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 8) {

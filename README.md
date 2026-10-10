@@ -70,6 +70,8 @@ PHAssetChangeRequest.addKeyword(…) for each tag   (Photos merges additively �
 - Videos are skipped (counted in the progress UI).
 - A fresh chat session is used per photo so no tags leak between images.
 - Tag output is heavily sanitized before it reaches your library (see `Sources/AI/TagParser.swift`, covered by unit tests).
+- Runs show live pace and estimated remaining time. Photos are tagged **in parallel** (2 by default, 1–4 via the *Parallel* picker on the album page): each worker runs its own `ChatSession` over the shared weights — which MLX explicitly supports, since only the per-session KV cache is private — and keeps the *next* photo's load (iCloud fetch + HEIC decode) in flight while the current one is being tagged, so loading, inference, and keyword writes overlap. GPU kernels still share one device, so the speedup comes from overlap rather than doubled inference; each extra worker adds a few hundred MB of KV-cache memory. `parallelTagging = 1` restores strictly sequential behavior.
+- The *Detail* picker (1024 / 768 / 640 px) controls the image size fed to the model. Vision tokens scale with pixel area, so 768 px is substantially faster than 1024 px with only a small loss of fine detail; 640 px is the fastest and still fine for subject/setting/activity tags. Tune the combination with the probe: `-concurrencyProbe <path>` (see "Verifying a build").
 
 ## Model download integrity
 
@@ -89,6 +91,11 @@ So `ModelStore` does its own lifecycle: download → **validate** (every `*.safe
 # end-to-end: downloads/loads the model, tags one image, logs the tags, exits 0
 build/Build/Products/Debug/PhotoTagger.app/Contents/MacOS/PhotoTagger \
     -selfTestImage /path/to/any/photo.jpg
+
+# concurrency smoke test: N simultaneous inferences over one shared model
+# container (worker count via `defaults write com.phototagger.app probeWorkers N`)
+build/Build/Products/Debug/PhotoTagger.app/Contents/MacOS/PhotoTagger \
+    -concurrencyProbe /path/to/any/photo.jpg
 ```
 
 The self-test prints the raw model answer, the parsed tags, the inference time, and the memory footprint to the console log (`log show --predicate 'process == "PhotoTagger"' --last 5m`).

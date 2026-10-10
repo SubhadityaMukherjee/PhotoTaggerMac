@@ -132,6 +132,11 @@ struct RunView: View {
                 }
                 Spacer()
                 VStack(alignment: .trailing, spacing: 2) {
+                    if let eta = model.runETASeconds {
+                        Text("≈ \(AppModel.formatDuration(eta)) remaining")
+                            .monospacedDigit()
+                            .font(.callout.weight(.medium))
+                    }
                     Text(elapsedText)
                         .monospacedDigit()
                         .foregroundStyle(.secondary)
@@ -177,6 +182,9 @@ struct RunView: View {
 
     private var elapsedText: String {
         let t = Int(model.runElapsed)
+        if t >= 3600 {
+            return String(format: "%d:%02d:%02d elapsed", t / 3600, (t % 3600) / 60, t % 60)
+        }
         return String(format: "%02d:%02d elapsed", t / 60, t % 60)
     }
 }

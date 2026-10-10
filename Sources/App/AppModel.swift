@@ -77,6 +77,43 @@ final class AppModel {
     private(set) var lastFailureMessage: String?
     private(set) var stopRequested = false
 
+    /// How many photos are tagged simultaneously. Workers run real
+    /// inferences concurrently over the shared model (each photo gets its
+    /// own ChatSession/KV cache), and each one keeps an image prefetch in
+    /// flight; every extra worker costs a few hundred MB of memory.
+    /// Persisted; 1 restores the old strictly-sequential behavior.
+    var parallelTagging: Int = {
+        let stored = UserDefaults.standard.integer(forKey: AppModel.parallelTaggingKey)
+        return min(max(stored == 0 ? 2 : stored, 1), 4)
+    }() {
+        didSet {
+            let clamped = min(max(parallelTagging, 1), 4)
+            if clamped != parallelTagging {
+                parallelTagging = clamped
+                return
+            }
+            UserDefaults.standard.set(parallelTagging, forKey: Self.parallelTaggingKey)
+        }
+    }
+    nonisolated private static let parallelTaggingKey = "parallelTagging"
+
+    /// Longest image edge (px) fed to the model. Vision tokens scale with
+    /// pixel area, so smaller images prefill much faster at some cost in
+    /// fine detail. Persisted; 640 / 768 / 1024.
+    var visionDetail: Int = {
+        let stored = UserDefaults.standard.integer(forKey: AppModel.visionDetailKey)
+        return [640, 768, 1024].contains(stored) ? stored : 1024
+    }() {
+        didSet {
+            guard [640, 768, 1024].contains(visionDetail) else {
+                visionDetail = 1024
+                return
+            }
+            UserDefaults.standard.set(visionDetail, forKey: AppModel.visionDetailKey)
+        }
+    }
+    nonisolated private static let visionDetailKey = "visionDetail"
+
     @ObservationIgnored
     private var runTask: Task<Void, Never>?
 
@@ -100,6 +137,17 @@ final class AppModel {
             let path = args[idx + 1]
             modelStore.startLoadingIfNeeded()
             Task { await selfTest(imagePath: path) }
+            return
+        }
+        if let idx = args.firstIndex(of: "-concurrencyProbe"), idx + 1 < args.count {
+            let path = args[idx + 1]
+            var workers = UserDefaults.standard.integer(forKey: "probeWorkers")
+            if workers <= 0 { workers = 2 }
+            workers = min(workers, 8)
+            var rounds = UserDefaults.standard.integer(forKey: "probeRounds")
+            if rounds <= 0 { rounds = 2 }
+            modelStore.startLoadingIfNeeded()
+            Task { await concurrencyProbe(imagePath: path, workers: workers, rounds: rounds) }
             return
         }
         if args.contains("-preloadModel") {
@@ -202,7 +250,10 @@ final class AppModel {
 
     private func runLoop(targets: [PHAsset]) async {
         let log = DebugLog.shared
-        log.info("Run", "Tagging \(targets.count) photos in “\(runAlbumTitle)”")
+        let workers = min(parallelTagging, targets.count)
+        log.info(
+            "Run",
+            "Tagging \(targets.count) photos in “\(runAlbumTitle)” — \(workers) in parallel")
         defer {
             runIsActive = false
             stopRequested = false
@@ -244,76 +295,154 @@ final class AppModel {
 
         let engine = PhotoTaggerEngine(container: container!)
 
-        for asset in targets {
+        // The model container is designed for multiple concurrent
+        // ChatSessions (each photo gets its own), so workers run real
+        // inferences simultaneously on the shared weights. Striding the
+        // target list keeps each worker's prefetch simple.
+        await withTaskGroup(of: Void.self) { group in
+            for offset in 0..<workers {
+                let slice = stride(from: offset, to: targets.count, by: workers)
+                    .map { targets[$0] }
+                group.addTask { [weak self] in
+                    await self?.workerLoop(engine: engine, assets: slice)
+                }
+            }
+        }
+    }
+
+    /// One inference worker over its (strided) slice of assets. Keeps one
+    /// image prefetch in flight so the next photo's network fetch + HEIC
+    /// decode overlap the current photo's GPU inference.
+    private func workerLoop(engine: PhotoTaggerEngine, assets: [PHAsset]) async {
+        let log = DebugLog.shared
+        guard !assets.isEmpty else { return }
+
+        var nextIndex = 1
+        var pendingLoad: Task<(PHAsset, Result<CGImage, Error>), Never>? =
+            prefetchImage(for: assets[0])
+        defer { pendingLoad?.cancel() }
+
+        while let current = pendingLoad, !Task.isCancelled {
+            pendingLoad = nextIndex < assets.count ? prefetchImage(for: assets[nextIndex]) : nil
+            if pendingLoad != nil { nextIndex += 1 }
+
+            let (asset, result) = await current.value
             if Task.isCancelled { break }
 
-            // Skip known read-only assets before spending inference on them
-            // (shared iCloud albums and similar reject property edits).
-            if !asset.canPerform(.properties) {
-                store.insertReadOnly(asset.localIdentifier)
-                runStats.skippedReadOnly += 1
-                log.info(
-                    "Photos",
-                    "\(PhotoLibraryService.displayName(for: asset) ?? "photo") is read-only — skipped (\(asset.localIdentifier))"
-                )
-                continue
-            }
-
-            currentFileName = PhotoLibraryService.displayName(for: asset)
-            currentTags = []
-
-            do {
-                let image = try await library.loadImage(for: asset)
-                if Task.isCancelled { break }
-                currentThumbnail = image
-
-                let raw = try await engine.rawTags(for: image)
-                if Task.isCancelled { break }
-
-                let tags = TagParser.parse(raw)
-                guard !tags.isEmpty else {
-                    runStats.failed += 1
-                    log.warning(
-                        "Model",
-                        "\(currentFileName ?? "photo"): model produced no usable tags — "
-                            + "raw answer: \(raw.prefix(300))")
-                    continue
-                }
-
-                try await library.addKeywords(tags, to: asset)
-                store.insert(asset.localIdentifier)
-
-                runStats.done += 1
-                currentTags = tags
-                recentEvents.insert(
-                    TagEvent(assetLocalID: asset.localIdentifier, fileName: currentFileName, tags: tags),
-                    at: 0)
-                if recentEvents.count > 100 { recentEvents.removeLast(recentEvents.count - 100) }
-            } catch let error as PhotoLibraryError {
-                if case .assetNotEditable = error {
-                    // Shared-album / restricted photos: expected, not a failure.
+            switch result {
+            case .success(let image):
+                await process(asset, image, engine: engine)
+            case .failure(let error):
+                if let libraryError = error as? PhotoLibraryError,
+                    case .assetNotEditable = libraryError
+                {
+                    // Read-only assets are filtered at prefetch time.
                     store.insertReadOnly(asset.localIdentifier)
                     runStats.skippedReadOnly += 1
                     log.info(
                         "Photos",
-                        "\(currentFileName ?? "photo") is read-only — skipped (\(asset.localIdentifier))")
+                        "\(PhotoLibraryService.displayName(for: asset) ?? "photo") is read-only — skipped (\(asset.localIdentifier))"
+                    )
+                } else if error is CancellationError {
+                    break
                 } else {
                     runStats.failed += 1
-                    lastFailureMessage = "\(currentFileName ?? "photo"): \(error.localizedDescription)"
+                    let name = PhotoLibraryService.displayName(for: asset) ?? "photo"
+                    lastFailureMessage = "\(name): \(error.localizedDescription)"
                     log.error(
                         "Photos",
-                        "write failed for \(currentFileName ?? "?") (\(asset.localIdentifier)): \(error)")
+                        "image load failed for \(name) (\(asset.localIdentifier)): \(error)")
                 }
-            } catch is CancellationError {
-                break
+            }
+        }
+    }
+
+    /// Starts the next image load without waiting for the current photo's
+    /// inference. The decode itself happens off the main actor inside
+    /// PHImageManager/ImageIO.
+    private func prefetchImage(for asset: PHAsset) -> Task<(PHAsset, Result<CGImage, Error>), Never> {
+        Task {
+            // Skip known read-only assets before spending a network fetch
+            // on them (shared iCloud albums reject property edits).
+            guard asset.canPerform(.properties) else {
+                return (asset, .failure(PhotoLibraryError.assetNotEditable(fileName: nil)))
+            }
+            do {
+                return (asset, .success(try await library.loadImage(
+                    for: asset, maxPixelSize: CGFloat(visionDetail))))
             } catch {
-                // Per-photo failures shouldn't kill the run.
+                return (asset, .failure(error))
+            }
+        }
+    }
+
+    /// Tags and writes one photo. Shared by all workers; per-photo failures
+    /// are counted, never fatal to the run.
+    private func process(_ asset: PHAsset, _ image: CGImage, engine: PhotoTaggerEngine) async {
+        let log = DebugLog.shared
+
+        // Defense in depth: the prefetch pre-check can race Photos state.
+        guard asset.canPerform(.properties) else {
+            store.insertReadOnly(asset.localIdentifier)
+            runStats.skippedReadOnly += 1
+            log.info(
+                "Photos",
+                "\(PhotoLibraryService.displayName(for: asset) ?? "photo") is read-only — skipped (\(asset.localIdentifier))"
+            )
+            return
+        }
+
+        currentFileName = PhotoLibraryService.displayName(for: asset)
+        currentThumbnail = image
+        currentTags = []
+
+        do {
+            let raw = try await engine.rawTags(for: image)
+            if Task.isCancelled { return }
+
+            let tags = TagParser.parse(raw)
+            guard !tags.isEmpty else {
+                runStats.failed += 1
+                log.warning(
+                    "Model",
+                    "\(currentFileName ?? "photo"): model produced no usable tags — "
+                        + "raw answer: \(raw.prefix(300))")
+                return
+            }
+
+            try await library.addKeywords(tags, to: asset)
+            store.insert(asset.localIdentifier)
+
+            runStats.done += 1
+            currentTags = tags
+            recentEvents.insert(
+                TagEvent(assetLocalID: asset.localIdentifier, fileName: currentFileName, tags: tags),
+                at: 0)
+            if recentEvents.count > 100 { recentEvents.removeLast(recentEvents.count - 100) }
+        } catch let error as PhotoLibraryError {
+            if case .assetNotEditable = error {
+                // Shared-album / restricted photos: expected, not a failure.
+                store.insertReadOnly(asset.localIdentifier)
+                runStats.skippedReadOnly += 1
+                log.info(
+                    "Photos",
+                    "\(currentFileName ?? "photo") is read-only — skipped (\(asset.localIdentifier))")
+            } else {
                 runStats.failed += 1
                 lastFailureMessage = "\(currentFileName ?? "photo"): \(error.localizedDescription)"
                 log.error(
-                    "Run",
-                    "photo failed \(currentFileName ?? "?") (\(asset.localIdentifier)): \(error)")
+                    "Photos",
+                    "write failed for \(currentFileName ?? "?") (\(asset.localIdentifier)): \(error)")
             }
+        } catch is CancellationError {
+            // Run is stopping; leave counts as they are.
+        } catch {
+            // Per-photo failures shouldn't kill the run.
+            runStats.failed += 1
+            lastFailureMessage = "\(currentFileName ?? "photo"): \(error.localizedDescription)"
+            log.error(
+                "Run",
+                "photo failed \(currentFileName ?? "?") (\(asset.localIdentifier)): \(error)")
         }
     }
 
@@ -363,6 +492,77 @@ final class AppModel {
     }
 
     // MARK: - Self test
+
+    /// Runs several inferences on one image file simultaneously to verify
+    /// that concurrent ChatSessions over a single shared model container
+    /// work on this machine (the run loop relies on it) and to measure the
+    /// throughput scaling of extra workers. Launched via
+    /// `-concurrencyProbe <path>`; worker count via `defaults write …
+    /// probeWorkers N`, rounds per worker via `probeRounds N`, and image
+    /// size via `visionDetail`. Never touches the photo library.
+    private func concurrencyProbe(imagePath: String, workers: Int, rounds: Int) async {
+        guard
+            let source = CGImageSourceCreateWithURL(
+                URL(fileURLWithPath: imagePath) as CFURL, nil),
+            let image = CGImageSourceCreateThumbnailAtIndex(
+                source, 0,
+                [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: CGFloat(visionDetail),
+                ] as CFDictionary)
+        else {
+            NSLog("PhotoTagger probe: cannot load image \(imagePath)")
+            exit(1)
+        }
+
+        var container: ModelContainer? = modelStore.containerIfReady
+        while container == nil {
+            if case .failed(let message) = modelStore.phase {
+                NSLog("PhotoTagger probe: model failed: \(message)")
+                exit(1)
+            }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+            container = modelStore.containerIfReady
+        }
+
+        let engine = PhotoTaggerEngine(container: container!)
+
+        // Untimed warm-up: the first inference in a process pays Metal
+        // kernel compilation, which would skew the measurement.
+        _ = try? await engine.rawTags(for: image)
+
+        let started = Date()
+        await withTaskGroup(of: Int.self) { group in
+            for _ in 0..<workers {
+                group.addTask {
+                    var completed = 0
+                    for _ in 0..<rounds {
+                        let t0 = Date()
+                        do {
+                            _ = try await engine.rawTags(for: image)
+                            completed += 1
+                            NSLog(
+                                "PhotoTagger probe: ok in %.1fs",
+                                Date().timeIntervalSince(t0))
+                        } catch {
+                            NSLog(
+                                "PhotoTagger probe: FAILED after %.1fs: %@",
+                                Date().timeIntervalSince(t0), String(describing: error))
+                        }
+                    }
+                    return completed
+                }
+            }
+            var total = 0
+            for await n in group { total += n }
+            let elapsed = Date().timeIntervalSince(started)
+            let rss = Double(Self.getpidMemoryFootprint() ?? 0) / 1_073_741_824
+            NSLog(
+                "PhotoTagger probe summary: %@",
+                "\(workers) workers × \(rounds) rounds @\(visionDetail)px — \(total)/\(workers * rounds) ok in \(String(format: "%.1f", elapsed))s = \(String(format: "%.2f", elapsed / Double(max(total, 1)))) s/photo ≈ \(String(format: "%.1f", Double(total) / elapsed * 60)) photos/min (footprint \(String(format: "%.1f", rss)) GB)")
+        }
+        exit(0)
+    }
 
     /// Diagnoses the keyword-write path against the real library without
     /// writing anything: reports authorization, capability flags, and runs a
@@ -477,8 +677,30 @@ final class AppModel {
         return Double(runStats.done + runStats.failed) / (elapsed / 60)
     }
 
+    /// Photos left in the current run.
+    var runRemainingCount: Int {
+        let processed = runStats.done + runStats.failed + runStats.skippedReadOnly
+        return max(runStats.total - processed, 0)
+    }
+
+    /// Estimated seconds until the run finishes, once a pace is measurable.
+    var runETASeconds: TimeInterval? {
+        guard runPace > 0, runRemainingCount > 0 else { return nil }
+        return Double(runRemainingCount) / runPace * 60
+    }
+
     nonisolated static func formatByteCount(_ bytes: Int64) -> String {
         ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+    }
+
+    /// Human "3 h 12 min" / "45 min" / "less than a minute" for ETAs.
+    nonisolated static func formatDuration(_ seconds: TimeInterval) -> String {
+        let s = max(0, Int(seconds.rounded()))
+        if s < 60 { return "less than a minute" }
+        if s < 3600 { return "\(s / 60) min" }
+        let hours = s / 3600
+        let minutes = (s % 3600) / 60
+        return minutes > 0 ? "\(hours) h \(minutes) min" : "\(hours) h"
     }
 }
 
