@@ -47,13 +47,9 @@ private struct AlbumSidebar: View {
 
     var body: some View {
         List(selection: Binding(
-            get: { model.selectedAlbumID },
-            set: { id in
-                if id == AppModel.debugSidebarID {
-                    model.selectDebugPane()
-                } else if let id, let album = model.albums.first(where: { $0.id == id }) {
-                    model.select(album)
-                }
+            get: { model.selectedAlbumIDs },
+            set: { ids in
+                model.selectIDs(ids)
             }
         )) {
             ForEach(model.albums) { album in
@@ -69,6 +65,14 @@ private struct AlbumSidebar: View {
             }
         }
         .navigationTitle("Albums")
+        .safeAreaInset(edge: .bottom) {
+            Text("⌘-click to select several albums")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 4)
+                .background(.bar)
+        }
         .overlay {
             if model.albums.isEmpty {
                 ContentUnavailableView(
@@ -82,10 +86,8 @@ private struct AlbumSidebar: View {
             ToolbarItem {
                 Button {
                     model.refreshAlbums()
-                    if let id = model.selectedAlbumID,
-                        let album = model.albums.first(where: { $0.id == id })
-                    {
-                        model.select(album)
+                    if !model.selectedAlbumIDs.isEmpty {
+                        model.selectIDs(model.selectedAlbumIDs)
                     }
                 } label: {
                     Label("Refresh", systemImage: "arrow.clockwise")
@@ -142,7 +144,7 @@ private struct DetailPane: View {
         Group {
             // An explicit Debug Log selection wins over run routing so
             // errors can be watched live while a run is going.
-            if model.selectedAlbumID == AppModel.debugSidebarID {
+            if model.selectedAlbumIDs == [AppModel.debugSidebarID] {
                 DebugView()
             } else if model.runIsActive {
                 RunView()

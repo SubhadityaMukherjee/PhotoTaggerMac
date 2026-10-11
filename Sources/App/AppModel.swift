@@ -43,22 +43,27 @@ final class AppModel {
 
     private(set) var accessPhase: AccessPhase = .checking
     private(set) var albums: [AlbumSummary] = []
-    var selectedAlbumID: String?
+    /// Sidebar selection as album ids. May also hold the debug pane's
+    /// pseudo-id, which is exclusive — it never combines with albums.
+    private(set) var selectedAlbumIDs: Set<String> = []
 
     /// Whether the Debug Log section appears in the sidebar. Off by
     /// default; toggled via View ▸ Show Debug Panel (⇧⌘D).
     var showDebugPanel = false {
         didSet {
-            if !showDebugPanel, selectedAlbumID == Self.debugSidebarID {
-                selectedAlbumID = nil
-                selectedAssets = nil
-                taggedCount = 0
+            if !showDebugPanel, selectedAlbumIDs.contains(Self.debugSidebarID) {
+                clearSelection()
             }
         }
     }
 
+    /// The selected albums themselves, in sidebar order, for the detail
+    /// pane's per-album breakdown.
+    private(set) var selectedAlbums: [AlbumSummary] = []
+    /// The deduplicated union of the selected albums — what the detail
+    /// pane shows and "Tag All" runs over.
     private(set) var selectedAssets: AlbumAssets?
-    /// How many photos in the selected album this app has already tagged.
+    /// How many unique photos across the selection this app has tagged.
     private(set) var taggedCount = 0
 
     let library = PhotoLibraryService()
@@ -177,32 +182,53 @@ final class AppModel {
 
     func refreshAlbums() {
         albums = library.fetchAlbums()
-        if let id = selectedAlbumID, id != Self.debugSidebarID,
-            !albums.contains(where: { $0.id == id })
-        {
-            selectedAlbumID = nil
-            selectedAssets = nil
-            taggedCount = 0
+        let valid = Set(albums.map(\.id)).union([Self.debugSidebarID])
+        let kept = selectedAlbumIDs.intersection(valid)
+        if kept != selectedAlbumIDs {
+            selectIDs(kept)
         }
     }
 
     /// Shows the developer log pane (sidebar → Debug Log).
     func selectDebugPane() {
-        selectedAlbumID = Self.debugSidebarID
+        selectedAlbumIDs = [Self.debugSidebarID]
+        selectedAlbums = []
         selectedAssets = nil
         taggedCount = 0
     }
 
-    func select(_ album: AlbumSummary?) {
-        selectedAlbumID = album?.id
-        guard let album else {
-            selectedAssets = nil
-            taggedCount = 0
+    /// Selects by ids, preserving sidebar order. The debug pane is
+    /// exclusive: any set containing it selects only the debug pane; an
+    /// empty set clears the selection.
+    func selectIDs(_ ids: Set<String>) {
+        if ids.contains(Self.debugSidebarID) {
+            selectDebugPane()
             return
         }
-        let assets = library.fetchAssets(for: album)
-        selectedAssets = assets
-        taggedCount = assets.images.filter { store.contains($0.localIdentifier) }.count
+        select(albums: albums.filter { ids.contains($0.id) })
+    }
+
+    func select(_ album: AlbumSummary?) {
+        select(albums: album.map { [$0] } ?? [])
+    }
+
+    func select(albums: [AlbumSummary]) {
+        guard !albums.isEmpty else {
+            clearSelection()
+            return
+        }
+        selectedAlbumIDs = Set(albums.map(\.id))
+        selectedAlbums = albums
+        selectedAssets = library.fetchMergedAssets(for: albums)
+        taggedCount =
+            selectedAssets?.images.filter { store.contains($0.localIdentifier) }.count ?? 0
+    }
+
+    func clearSelection() {
+        selectedAlbumIDs = []
+        selectedAlbums = []
+        selectedAssets = nil
+        taggedCount = 0
     }
 
     /// Number of photos a "Tag All" run would process right now.
@@ -277,12 +303,10 @@ final class AppModel {
                         + "\(Int(runElapsed.rounded()))s"
                 )
             }
-            // Refresh the selected album so "already tagged" counts reflect
+            // Refresh the selection so "already tagged" counts reflect
             // what just happened.
-            if let id = selectedAlbumID, id != Self.debugSidebarID,
-                let album = albums.first(where: { $0.id == id })
-            {
-                select(album)
+            if !selectedAlbumIDs.isEmpty, selectedAlbumIDs != [Self.debugSidebarID] {
+                selectIDs(selectedAlbumIDs)
             }
         }
 

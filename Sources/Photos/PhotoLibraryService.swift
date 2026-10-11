@@ -207,6 +207,60 @@ final class PhotoLibraryService {
         return AlbumAssets(summary: album, images: images, videoCount: videoCount)
     }
 
+    /// Union of several targets, deduplicated — a photo living in two
+    /// selected albums is processed (and counted) once. Images keep the
+    /// creation-date order every other fetch uses.
+    func fetchMergedAssets(for albums: [AlbumSummary]) -> AlbumAssets {
+        // "All Photos" already contains every other album's photos.
+        if let allPhotos = albums.first(where: \.isAllPhotos) {
+            return fetchAssets(for: allPhotos)
+        }
+
+        var seenImages = Set<String>()
+        var images: [PHAsset] = []
+        var seenVideos = Set<String>()
+
+        for album in albums {
+            let collections = PHAssetCollection.fetchAssetCollections(
+                withLocalIdentifiers: [album.id], options: nil)
+            guard let collection = collections.firstObject else { continue }
+
+            PHAsset.fetchAssets(in: collection, options: Self.imageFetchOptions())
+                .enumerateObjects { asset, _, _ in
+                    if seenImages.insert(asset.localIdentifier).inserted {
+                        images.append(asset)
+                    }
+                }
+            PHAsset.fetchAssets(in: collection, options: Self.videoCountFetchOptions())
+                .enumerateObjects { asset, _, _ in
+                    _ = seenVideos.insert(asset.localIdentifier)
+                }
+        }
+
+        images.sort {
+            ($0.creationDate ?? .distantPast, $0.localIdentifier)
+                < ($1.creationDate ?? .distantPast, $1.localIdentifier)
+        }
+
+        let titles = albums.map(\.title)
+        return AlbumAssets(
+            summary: AlbumSummary(
+                id: albums.count == 1 ? albums[0].id : Self.mergedSelectionID,
+                title: albums.count == 1 ? titles[0] : Self.mergedTitle(titles),
+                assetCount: images.count,
+                isSmartAlbum: false),
+            images: images,
+            videoCount: seenVideos.count)
+    }
+
+    /// Pseudo-id for a multi-album selection's synthesized summary.
+    static let mergedSelectionID = "__multi__"
+
+    private static func mergedTitle(_ titles: [String]) -> String {
+        if titles.count <= 2 { return titles.joined(separator: " + ") }
+        return "\(titles.prefix(2).joined(separator: " + ")) + \(titles.count - 2) more"
+    }
+
     // MARK: - Image loading
 
     /// Loads a downscaled, orientation-corrected bitmap for the asset.

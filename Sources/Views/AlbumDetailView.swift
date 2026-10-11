@@ -23,6 +23,9 @@ struct AlbumDetailView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     summaryGrid
+                    if model.selectedAlbums.count > 1 {
+                        albumBreakdown
+                    }
                     howItWorks
                     if let failure = model.lastFailureMessage {
                         Label(failure, systemImage: "exclamationmark.triangle")
@@ -91,6 +94,38 @@ struct AlbumDetailView: View {
                 Stat(number: assets.videoCount, label: "Videos skipped")
             }
         }
+    }
+
+    /// Per-album breakdown for a multi-album selection.
+    private var albumBreakdown: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Selected Albums")
+                .font(.headline)
+            ForEach(model.selectedAlbums) { album in
+                HStack {
+                    Label(
+                        album.title,
+                        systemImage: album.isAllPhotos
+                            ? "photo.on.rectangle.angled"
+                            : album.isSmartAlbum ? "sparkles" : "rectangle.stack"
+                    )
+                    .lineLimit(1)
+                    Spacer()
+                    Text("\(album.assetCount) photos")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+            }
+            Text(
+                "Photos that appear in more than one selected album are tagged only once — \(assets.images.count) unique photos in total."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+        .padding(16)
+        .frame(maxWidth: 640, alignment: .leading)
+        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var howItWorks: some View {
