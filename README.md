@@ -1,6 +1,6 @@
 # PhotoTagger
 
-A native macOS app that tags the photos in your Apple **Photos** library using a vision-language AI that runs entirely on your Mac — then writes those tags back as **Photos keywords**, so typing things like *“yellow shirt”*, *“woman in yellow”* or *“lake”* into the Photos search bar just works.
+A native macOS app that tags the photos in your Apple **Photos** library using a vision-language AI that runs entirely on your Mac — then writes those tags back as **Photos keywords**, so typing things like *“yellow shirt”*, *“red raincoat”* or *“lake”* into the Photos search bar just works.
 
 Author: **Subhaditya Mukherjee**
 
@@ -8,7 +8,7 @@ Author: **Subhaditya Mukherjee**
 
 - **All Photos** — a whole-library entry pinned at the top of the sidebar, for tagging everything at once.
 - **Album picker** — every album and smart album in your system photo library (Recents, Favorites, your own albums, …) with photo counts.
-- **Tag All** — one click runs [Qwen3-VL 8B](https://huggingface.co/mlx-community/Qwen3-VL-8B-Instruct-4bit) (4-bit) over each photo in the chosen target and adds 5–12 keywords covering the subject, clothing & colors, setting, activity and mood.
+- **Tag All** — one click runs the selected [Qwen3-VL](https://huggingface.co/mlx-community/Qwen3-VL-4B-Instruct-4bit) model (4-bit MLX build — 2B/4B/8B picker) over each photo in the chosen target and adds 8–12 search keywords (1–2 words each) covering the subject, pose, clothing & colors, setting, occasion and framing.
 - **On-device AI** — the model runs in-process via [MLX](https://github.com/ml-explore/mlx-swift), Apple's Metal-based machine-learning framework. Nothing is uploaded anywhere; no API keys.
 - **Search-ready immediately** — keywords are searchable in the Photos app's search field and visible in Get Info (⌘I). If you use iCloud Photos they sync to your other devices.
 - **Never destructive** — pixels are never touched: photos are read, never edited, re-encoded or deleted. The *only* write PhotoTagger ever performs is adding keywords via Photos' additive `addKeyword` API — duplicates are ignored, existing keywords always survive.
@@ -24,6 +24,10 @@ defaults delete com.phototagger.app PhotoTagger.taggedAssetIDs # make PhotoTagge
 ```
 
 Deleting the index only means everything gets tagged again on the next run — since Photos merges keywords additively, that's harmless (just slow).
+
+### Splitting old multi-word keywords
+
+Earlier versions wrote longer keyword phrases; tags are now 1–2 words each. The debug pane (View ▸ Show Debug Panel, ⇧⌘D) has a one-shot **Split Multi-Word Keywords** tool that rewrites keywords on the photos tagged so far, cutting 3+ word keywords at logical boundaries ("woman in yellow shirt" → "woman", "yellow shirt"). PhotoKit can only add keywords, so the rewrite goes through AppleScript — macOS will ask once for permission to control Photos. Keywords that don't look machine-generated (mixed case, punctuation, dates) are left untouched.
 
 > **Note for "All Photos" on iCloud-optimized libraries:** photos whose originals aren't on this Mac are downloaded on demand during the run (one at a time), so a whole-library run may take a long while on slow connections. The Stop button and resumability make long runs painless.
 
@@ -59,7 +63,7 @@ Photos (PhotoKit)
    │  read photo (current version, iCloud-aware, orientation-corrected, ≤1024 px)
    ▼
 Qwen3-VL 8B 4-bit (MLX, on-device)
-   │  "output ONLY a comma-separated list of 5–12 tags…"
+   │  "output ONLY a comma-separated list of 8–12 tags…" (1–2 words each)
    ▼
 TagParser  →  lowercase, strip junk/fillers, dedupe, cap at 12
    ▼

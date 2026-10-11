@@ -13,15 +13,21 @@ struct PhotoTaggerEngine {
     let container: ModelContainer
 
     static let prompt = """
-        You tag photos in a personal photo library so they can be found later by searching.
+        You tag photos in a personal photo library so they can be found later by searching. Tags must be SPECIFIC and DESCRIPTIVE — generic tags like "person", "people", "indoor" or "outdoor" are useless for search.
 
-        Look at the photo and output ONLY a comma-separated list of 5-12 tags describing it. No other text, no explanations.
+        Look at the photo and output ONLY a comma-separated list of 8-12 tags. No other text, no explanations.
 
-        Rules for the tags:
-        - Each tag is 1-3 lowercase words, plain text (no hashtags, no punctuation).
-        - Cover: the main subject (people, animals, objects), notable clothing with its color (e.g. "yellow shirt", "woman in red dress"), the setting or location (e.g. "lake", "kitchen", "city street", "mountains"), the activity or occasion (e.g. "hiking", "birthday party", "dinner"), and the style or mood when clear (e.g. "sunset", "black and white", "selfie", "close-up").
-        - Combine color + object or color + clothing whenever a color stands out.
-        - Only describe what is clearly visible. Skip a category if it does not apply.
+        Every tag is 1 or 2 lowercase words — never 3 or more. Hyphenated compounds count as one word ("mid-air", "close-up", "cross-legged").
+
+        Cover as many of these as are clearly visible:
+        - subject: who or what ("woman", "toddler", "golden retriever", "red bicycle")
+        - pose or action: "sitting cross-legged", "mid-air jump", "lying down", "looking away", "arms crossed", "cutting cake"
+        - clothing with color: "yellow shirt", "red raincoat", "white kurta", "blue saree"
+        - specific setting: "rocky beach", "dinner table", "hiking trail", "temple courtyard", "apartment balcony"
+        - occasion: "birthday party", "street food", "wedding", "road trip"
+        - framing and style: "close-up", "selfie", "golden hour", "backlit", "monochrome", "candid"
+
+        Prefer two precise words over one generic word ("red raincoat", not "clothing"). Never guess names, places or relationships you cannot see.
         """
 
     func rawTags(for image: CGImage) async throws -> String {
@@ -32,5 +38,16 @@ struct PhotoTaggerEngine {
         )
         let ciImage = CIImage(cgImage: image)
         return try await session.respond(to: Self.prompt, image: .ciImage(ciImage))
+    }
+}
+
+/// Serializes GPU inference across workers. MLX's Metal command-encoder
+/// table is not safe under simultaneous eval from multiple tasks (it can
+/// segfault — verified by a crash report), so workers take turns on the
+/// model while their image loads and Photos writes overlap another
+/// worker's inference.
+actor InferenceSerializer {
+    func rawTags(_ engine: PhotoTaggerEngine, for image: CGImage) async throws -> String {
+        try await engine.rawTags(for: image)
     }
 }

@@ -6,9 +6,10 @@ final class TagParserTests: XCTestCase {
 
     func testPlainCommaList() {
         let raw = "woman in yellow, yellow shirt, lake, mountains, sunny day"
+        // "woman in yellow" is 3 words — rejected under the 1-2 word rule.
         XCTAssertEqual(
             TagParser.parse(raw),
-            ["woman in yellow", "yellow shirt", "lake", "mountains", "sunny day"])
+            ["yellow shirt", "lake", "mountains", "sunny day"])
     }
 
     func testThinkingBlockIsStripped() {
@@ -31,7 +32,7 @@ final class TagParserTests: XCTestCase {
             3. - summer day
             """
         XCTAssertEqual(
-            TagParser.parse(raw), ["woman in yellow shirt", "lake", "summer day"])
+            TagParser.parse(raw), ["lake", "summer day"])
     }
 
     func testBulletedList() {
@@ -40,7 +41,7 @@ final class TagParserTests: XCTestCase {
             * lake
             * hiking
             """
-        XCTAssertEqual(TagParser.parse(raw), ["woman wearing yellow", "lake", "hiking"])
+        XCTAssertEqual(TagParser.parse(raw), ["lake", "hiking"])
     }
 
     func testMarkdownCodeFence() {
@@ -87,7 +88,7 @@ final class TagParserTests: XCTestCase {
     }
 
     func testMaxTagsCapped() {
-        let raw = (1...20).map { "tag number \($0)" }.joined(separator: ", ")
+        let raw = (1...20).map { "tag\($0)" }.joined(separator: ", ")
         XCTAssertEqual(TagParser.parse(raw).count, 12)
     }
 
@@ -106,9 +107,11 @@ final class TagParserTests: XCTestCase {
     }
 
     func testBlackAndWhiteStyleTag() {
+        // 3 words — rejected under the 1-2 word rule (the prompt asks for
+        // "monochrome" instead).
         XCTAssertEqual(
             TagParser.parse("black and white, portrait, studio"),
-            ["black and white", "portrait", "studio"])
+            ["portrait", "studio"])
     }
 
     // MARK: - Comma-less answers (model dropped the separators)

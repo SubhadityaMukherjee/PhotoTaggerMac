@@ -3,7 +3,53 @@ import MLXLMCommon
 import MLXVLM
 import HuggingFace
 
-/// Downloads (first run) and loads the Qwen3-VL 8B 4-bit model into memory.
+/// The taggable models, all Qwen3-VL Instruct 4-bit MLX builds. Decode is
+/// memory-bandwidth bound (every token reads the whole weight set), so a
+/// smaller model is dramatically faster; tagging quality drops only a
+/// little down to 4B and modestly at 2B.
+enum ModelChoice: String, CaseIterable, Identifiable {
+    case fast2B
+    case balanced4B
+    case best8B
+
+    var id: String { rawValue }
+
+    var modelID: String {
+        switch self {
+        case .fast2B: return "mlx-community/Qwen3-VL-2B-Instruct-4bit"
+        case .balanced4B: return "mlx-community/Qwen3-VL-4B-Instruct-4bit"
+        case .best8B: return "mlx-community/Qwen3-VL-8B-Instruct-4bit"
+        }
+    }
+
+    var displayName: String {
+        switch self {
+        case .fast2B: return "Qwen3-VL 2B (4-bit)"
+        case .balanced4B: return "Qwen3-VL 4B (4-bit)"
+        case .best8B: return "Qwen3-VL 8B (4-bit)"
+        }
+    }
+
+    var shortName: String {
+        switch self {
+        case .fast2B: return "2B · fastest"
+        case .balanced4B: return "4B · balanced"
+        case .best8B: return "8B · best"
+        }
+    }
+
+    /// Rough on-disk size, used for labels until download progress reports
+    /// the real total.
+    var approximateBytes: Int64 {
+        switch self {
+        case .fast2B: return 1_700_000_000
+        case .balanced4B: return 3_000_000_000
+        case .best8B: return 5_200_000_000
+        }
+    }
+}
+
+/// Downloads (first run) and loads the selected model into memory.
 ///
 /// The model runs fully on-device via MLX (Apple's Metal-backed array
 /// framework) — no server, no API keys, nothing leaves the machine.
@@ -11,16 +57,43 @@ import HuggingFace
 /// The store owns one background load task; callers observe `phase` (and
 /// `containerIfReady`) while awaiting it. A download interrupted by the user
 /// continues in the background — the next "Tag All" resumes where it left
-/// off via the Hugging Face cache.
+/// off via the Hugging Face cache. Switching `choice` drops whatever is
+/// loaded so the next run downloads/loads the new model.
 @MainActor
 @Observable
 final class ModelStore {
 
-    static let modelID = "mlx-community/Qwen3-VL-8B-Instruct-4bit"
-    static let modelDisplayName = "Qwen3-VL 8B (4-bit)"
-    /// Rough on-disk size, used for labels until download progress reports
-    /// the real total.
-    static let approximateBytes: Int64 = 5_200_000_000
+    static let defaultChoice = ModelChoice.balanced4B
+    nonisolated private static let choiceKey = "modelChoice"
+
+    private(set) var choice: ModelChoice
+
+    var modelID: String { choice.modelID }
+    var displayName: String { choice.displayName }
+    var approximateBytes: Int64 { choice.approximateBytes }
+
+    init() {
+        if let raw = UserDefaults.standard.string(forKey: Self.choiceKey),
+            let stored = ModelChoice(rawValue: raw)
+        {
+            choice = stored
+        } else {
+            choice = Self.defaultChoice
+        }
+    }
+
+    /// Switches model: cancels any in-flight load/download and forgets the
+    /// loaded container; the next "Tag All" fetches the new one.
+    func switchModel(to newChoice: ModelChoice) {
+        guard newChoice != choice else { return }
+        choice = newChoice
+        UserDefaults.standard.set(newChoice.rawValue, forKey: Self.choiceKey)
+        loadTask?.cancel()
+        loadTask = nil
+        container = nil
+        phase = .notLoaded
+        DebugLog.shared.info("Model", "Switched model to \(displayName)")
+    }
 
     enum Phase: Equatable {
         case notLoaded
@@ -49,7 +122,7 @@ final class ModelStore {
     /// Starts the one-time download + load if needed. Safe to call anytime.
     func startLoadingIfNeeded() {
         guard container == nil, loadTask == nil, !phase.isBusy else { return }
-        phase = .downloading(totalBytes: Self.approximateBytes, receivedBytes: 0)
+        phase = .downloading(totalBytes: approximateBytes, receivedBytes: 0)
 
         loadTask = Task { [weak self] in
             guard let self else { return }
@@ -57,7 +130,7 @@ final class ModelStore {
                 let container = try await self.loadFromHub()
                 self.container = container
                 self.phase = .ready
-                DebugLog.shared.info("Model", "Model ready — \(Self.modelDisplayName)")
+                DebugLog.shared.info("Model", "Model ready — \(self.displayName)")
             } catch is CancellationError {
                 if self.container == nil { self.phase = .notLoaded }
             } catch {
@@ -93,16 +166,16 @@ final class ModelStore {
             DebugLog.shared.warning(
                 "Model",
                 "Downloaded model snapshot failed validation (\(error.localizedDescription)) — clearing the cache and retrying once")
-            try Self.wipeRepoCache()
+            try Self.wipeRepoCache(modelID: choice.modelID)
             let directory = try await downloadValidated(downloader)
             return try await loadModelContainer(from: directory, using: loader)
         }
     }
 
     private func downloadValidated(_ downloader: HubDownloader) async throws -> URL {
-        phase = .downloading(totalBytes: Self.approximateBytes, receivedBytes: 0)
+        phase = .downloading(totalBytes: approximateBytes, receivedBytes: 0)
         let directory = try await downloader.download(
-            id: Self.modelID,
+            id: choice.modelID,
             revision: nil,
             matching: ["*.safetensors", "*.json", "*.jinja"],
             useLatest: false,
@@ -112,7 +185,7 @@ final class ModelStore {
                 }
             })
         phase = .loading
-        try await Self.validateSnapshot(at: directory)
+        try await Self.validateSnapshot(at: directory, modelID: choice.modelID)
         return directory
     }
 
@@ -160,8 +233,8 @@ final class ModelStore {
     /// git tree listing instead: every `*.safetensors` it names must be
     /// present at the exact expected size, and each file's safetensors
     /// header must parse.
-    nonisolated static func validateSnapshot(at directory: URL) async throws {
-        let entries = try await fetchTreeEntries()
+    nonisolated static func validateSnapshot(at directory: URL, modelID: String) async throws {
+        let entries = try await fetchTreeEntries(modelID: modelID)
         let expected: [(path: String, size: Int)] =
             entries
             .compactMap { entry in
@@ -207,7 +280,7 @@ final class ModelStore {
 
     /// First page of `GET /api/models/{id}/tree/{revision}?recursive=true`.
     /// The model repos in use have well under one page of files.
-    nonisolated private static func fetchTreeEntries() async throws -> [[String: Any]] {
+    nonisolated private static func fetchTreeEntries(modelID: String) async throws -> [[String: Any]] {
         var components = URLComponents()
         components.scheme = "https"
         components.host = "huggingface.co"
@@ -260,11 +333,11 @@ final class ModelStore {
     /// Removes the HF cache for this repo so a corrupted/partial snapshot
     /// can't come back. HF cache dirs are named `models--org--name` (the
     /// `models--` kind prefix included) under `~/.cache/huggingface/hub`.
-    nonisolated static func wipeRepoCache() throws {
+    nonisolated static func wipeRepoCache(modelID: String) throws {
         let cacheRoot = URL.homeDirectory
             .appendingPathComponent(".cache/huggingface/hub")
         let repoDir = cacheRoot.appendingPathComponent(
-            "models--" + Self.modelID.replacingOccurrences(of: "/", with: "--"))
+            "models--" + modelID.replacingOccurrences(of: "/", with: "--"))
         guard FileManager.default.fileExists(atPath: repoDir.path) else { return }
         try FileManager.default.removeItem(at: repoDir)
     }
@@ -272,7 +345,7 @@ final class ModelStore {
     private func handleProgress(_ progress: Progress) {
         guard case .downloading = phase else { return }
         let total = progress.totalUnitCount > 0
-            ? progress.totalUnitCount : Self.approximateBytes
+            ? progress.totalUnitCount : approximateBytes
         guard total > 0, progress.completedUnitCount > 0 else { return }
 
         if progress.completedUnitCount >= total {

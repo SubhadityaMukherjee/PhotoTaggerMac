@@ -239,14 +239,14 @@ struct ModelStatusFooter: View {
     private var statusText: String {
         switch model.modelStore.phase {
         case .notLoaded:
-            return "AI model: \(ModelStore.modelDisplayName) — downloads on first use (\(AppModel.formatByteCount(ModelStore.approximateBytes)))"
+            return "AI model: \(model.modelStore.displayName) — downloads on first use (\(AppModel.formatByteCount(model.modelStore.approximateBytes)))"
         case .downloading(let total, let received):
             let pct = total > 0 ? Double(received) / Double(total) * 100 : 0
-            return "Downloading \(ModelStore.modelDisplayName) — \(AppModel.formatByteCount(received)) of \(AppModel.formatByteCount(total)) (\(Int(pct))%)"
+            return "Downloading \(model.modelStore.displayName) — \(AppModel.formatByteCount(received)) of \(AppModel.formatByteCount(total)) (\(Int(pct))%)"
         case .loading:
             return "Loading model into memory…"
         case .ready:
-            return "AI model ready — \(ModelStore.modelDisplayName), on-device"
+            return "AI model ready — \(model.modelStore.displayName), on-device"
         case .failed(let message):
             return "Model error: \(message)"
         }

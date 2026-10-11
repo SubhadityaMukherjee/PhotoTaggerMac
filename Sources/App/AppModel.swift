@@ -77,11 +77,12 @@ final class AppModel {
     private(set) var lastFailureMessage: String?
     private(set) var stopRequested = false
 
-    /// How many photos are tagged simultaneously. Workers run real
-    /// inferences concurrently over the shared model (each photo gets its
-    /// own ChatSession/KV cache), and each one keeps an image prefetch in
-    /// flight; every extra worker costs a few hundred MB of memory.
-    /// Persisted; 1 restores the old strictly-sequential behavior.
+    /// Pipeline depth: how many photos are in flight simultaneously.
+    /// Inference itself is serialized (MLX's Metal encoder table is not
+    /// safe under concurrent eval), but each worker prefetches its next
+    /// image and writes keywords while another worker holds the GPU, so
+    /// loading and Photos writes overlap inference. 1 restores strictly
+    /// sequential behavior. Persisted.
     var parallelTagging: Int = {
         let stored = UserDefaults.standard.integer(forKey: AppModel.parallelTaggingKey)
         return min(max(stored == 0 ? 2 : stored, 1), 4)
@@ -294,17 +295,19 @@ final class AppModel {
         }
 
         let engine = PhotoTaggerEngine(container: container!)
+        // Inference itself is serialized (see InferenceSerializer) — MLX's
+        // Metal encoder table segfaults under simultaneous eval. Workers
+        // still overlap their image loads and Photos writes with whoever
+        // currently holds the GPU.
+        let inference = InferenceSerializer()
 
-        // The model container is designed for multiple concurrent
-        // ChatSessions (each photo gets its own), so workers run real
-        // inferences simultaneously on the shared weights. Striding the
-        // target list keeps each worker's prefetch simple.
         await withTaskGroup(of: Void.self) { group in
             for offset in 0..<workers {
                 let slice = stride(from: offset, to: targets.count, by: workers)
                     .map { targets[$0] }
                 group.addTask { [weak self] in
-                    await self?.workerLoop(engine: engine, assets: slice)
+                    await self?.workerLoop(
+                        engine: engine, assets: slice, inference: inference)
                 }
             }
         }
@@ -313,7 +316,9 @@ final class AppModel {
     /// One inference worker over its (strided) slice of assets. Keeps one
     /// image prefetch in flight so the next photo's network fetch + HEIC
     /// decode overlap the current photo's GPU inference.
-    private func workerLoop(engine: PhotoTaggerEngine, assets: [PHAsset]) async {
+    private func workerLoop(
+        engine: PhotoTaggerEngine, assets: [PHAsset], inference: InferenceSerializer
+    ) async {
         let log = DebugLog.shared
         guard !assets.isEmpty else { return }
 
@@ -331,7 +336,7 @@ final class AppModel {
 
             switch result {
             case .success(let image):
-                await process(asset, image, engine: engine)
+                await process(asset, image, engine: engine, inference: inference)
             case .failure(let error):
                 if let libraryError = error as? PhotoLibraryError,
                     case .assetNotEditable = libraryError
@@ -378,7 +383,12 @@ final class AppModel {
 
     /// Tags and writes one photo. Shared by all workers; per-photo failures
     /// are counted, never fatal to the run.
-    private func process(_ asset: PHAsset, _ image: CGImage, engine: PhotoTaggerEngine) async {
+    private func process(
+        _ asset: PHAsset,
+        _ image: CGImage,
+        engine: PhotoTaggerEngine,
+        inference: InferenceSerializer
+    ) async {
         let log = DebugLog.shared
 
         // Defense in depth: the prefetch pre-check can race Photos state.
@@ -397,7 +407,7 @@ final class AppModel {
         currentTags = []
 
         do {
-            let raw = try await engine.rawTags(for: image)
+            let raw = try await inference.rawTags(engine, for: image)
             if Task.isCancelled { return }
 
             let tags = TagParser.parse(raw)

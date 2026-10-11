@@ -7,11 +7,20 @@ struct DebugView: View {
 
     private let log = DebugLog.shared
 
+    @Environment(AppModel.self) private var model
+    @State private var splitter = KeywordSplitService()
     @State private var errorsOnly = false
 
     var body: some View {
-        List(filtered) { entry in
-            DebugLogRow(entry: entry)
+        List {
+            Section("Keyword Maintenance") {
+                KeywordSplitSection(service: splitter, ids: model.store.ids)
+            }
+            Section("Events") {
+                ForEach(filtered) { entry in
+                    DebugLogRow(entry: entry)
+                }
+            }
         }
         .listStyle(.plain)
         .navigationTitle("Debug Log")
@@ -66,6 +75,65 @@ struct DebugView: View {
     private func copyAll() {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(log.transcript(), forType: .string)
+    }
+}
+
+// MARK: - Keyword split section
+
+/// Runs the one-shot "split multi-word keywords" maintenance job over the
+/// photos tagged so far. Hidden in the debug pane because it exists to
+/// migrate keywords written by older prompt versions.
+private struct KeywordSplitSection: View {
+
+    @Environment(AppModel.self) private var model
+    let service: KeywordSplitService
+    let ids: Set<String>
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(
+                "Older runs wrote multi-word keywords. This rewrites the keywords of the \(ids.count) tagged photos, splitting any 3+ word keyword into 1-2 word pieces (\"woman in yellow shirt\" → \"woman\", \"yellow shirt\"). Keywords that look hand-made are left alone."
+            )
+            .font(.callout)
+            .foregroundStyle(.secondary)
+
+            if service.progress.isRunning {
+                HStack {
+                    ProgressView(value: Double(service.progress.scanned), total: Double(max(service.progress.total, 1)))
+                        .frame(width: 220)
+                    Text(service.progress.summary)
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    Button("Cancel") {
+                        service.cancel()
+                    }
+                }
+            } else {
+                HStack {
+                    Button {
+                        Task { await service.run(ids: Array(ids)) }
+                    } label: {
+                        Text("Split Multi-Word Keywords")
+                    }
+                    .disabled(ids.isEmpty || model.runIsActive)
+                    if ids.isEmpty {
+                        Text("No tagged photos yet.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if service.progress.isDone {
+                        Text(service.progress.summary)
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            }
+
+            Text("macOS will ask once for permission to control Photos — this is required because PhotoKit can only add keywords, not read or replace them.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, 4)
     }
 }
 

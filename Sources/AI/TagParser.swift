@@ -11,8 +11,9 @@ enum TagParser {
 
     struct Options {
         var maxTags = 12
-        /// "woman in yellow shirt" (4 words) is a perfect search tag; 5+ is prose.
-        var maxWordsPerTag = 4
+        /// Tags are 1-2 words ("yellow shirt"); 3+ words is prose, not a
+        /// search keyword. Hyphenated compounds ("mid-air") are one word.
+        var maxWordsPerTag = 2
         var maxCharacters = 32
         /// Tags that carry no search value on their own.
         var fillers: Set<String> = [

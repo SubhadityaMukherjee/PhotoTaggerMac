@@ -216,7 +216,24 @@ final class PhotoLibraryService {
     /// originals; ImageIO then produces a ~1024 px thumbnail with the EXIF
     /// rotation baked in — plenty of detail for tagging at a fraction of the
     /// vision-token cost.
+    ///
+    /// When tagging runs fast (small models + pipelining), iCloud-backed
+    /// originals are requested quicker than PhotoKit likes and single
+    /// requests can fail transiently — so one retry after a beat.
     func loadImage(for asset: PHAsset, maxPixelSize: CGFloat = 1024) async throws -> CGImage {
+        do {
+            return try await fetchImage(for: asset, maxPixelSize: maxPixelSize)
+        } catch {
+            let name = PhotoLibraryService.displayName(for: asset) ?? "photo"
+            DebugLog.shared.warning(
+                "Photos",
+                "\(name): image data request failed (\(error)) — retrying once")
+            try? await Task.sleep(nanoseconds: 800_000_000)
+            return try await fetchImage(for: asset, maxPixelSize: maxPixelSize)
+        }
+    }
+
+    private func fetchImage(for asset: PHAsset, maxPixelSize: CGFloat) async throws -> CGImage {
         let options = PHImageRequestOptions()
         options.isNetworkAccessAllowed = true
         options.deliveryMode = .highQualityFormat
@@ -242,11 +259,21 @@ final class PhotoLibraryService {
                             kCGImageSourceShouldCacheImmediately: true,
                         ] as CFDictionary)
                 else {
-                    if let error = info?[PHImageErrorKey] as? Error {
-                        continuation.resume(throwing: error)
-                    } else {
-                        continuation.resume(throwing: PhotoLibraryError.imageUnavailable)
-                    }
+                    // Preserve the underlying Photos error when present, and
+                    // annotate the request context so the debug log shows
+                    // whether iCloud was involved.
+                    let inCloud = (info?[PHImageResultIsInCloudKey] as? Bool) ?? false
+                    let underlying = (info?[PHImageErrorKey] as? Error)
+                    let ns = underlying as? NSError
+                    let annotated = NSError(
+                        domain: ns?.domain ?? "PhotoTagger",
+                        code: ns?.code ?? 0,
+                        userInfo: [
+                            NSLocalizedDescriptionKey:
+                                "\(ns?.localizedDescription ?? "image data unavailable")"
+                                + " [inCloud=\(inCloud)]"
+                        ])
+                    continuation.resume(throwing: annotated)
                     return
                 }
                 continuation.resume(returning: image)

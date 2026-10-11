@@ -107,6 +107,27 @@ struct AlbumDetailView: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 10) {
+                    Text("Model")
+                        .foregroundStyle(.secondary)
+                        .frame(width: 58, alignment: .leading)
+                    Picker("Model", selection: Binding(
+                        get: { model.modelStore.choice },
+                        set: { model.modelStore.switchModel(to: $0) }
+                    )) {
+                        ForEach(ModelChoice.allCases) { choice in
+                            Text(choice.shortName).tag(choice)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 250)
+                    .disabled(model.runIsActive || model.modelStore.phase.isBusy)
+                    Text("Smaller models are 2–4× faster; downloads on first use. Quality differs little for tags.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                }
+
+                HStack(spacing: 10) {
                     Text("Parallel")
                         .foregroundStyle(.secondary)
                         .frame(width: 58, alignment: .leading)
@@ -121,7 +142,7 @@ struct AlbumDetailView: View {
                     .pickerStyle(.segmented)
                     .frame(width: 150)
                     .disabled(model.runIsActive)
-                    Text("Photos analyzed at once — faster, but each extra worker needs a few hundred MB of RAM.")
+                    Text("Photos in flight at once — image loading and keyword writes overlap AI analysis.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()
@@ -151,7 +172,7 @@ struct AlbumDetailView: View {
 
             GroupBox {
                 VStack(alignment: .leading, spacing: 8) {
-                    LabelRow(icon: "sparkles.rectangle.stack", text: "Each photo is analyzed on-device by Qwen3-VL 8B and gets 5–12 keywords (subject, clothing & colors, setting, activity, mood).")
+                    LabelRow(icon: "sparkles.rectangle.stack", text: "Each photo is analyzed on-device by the selected Qwen3-VL model and gets 8–12 search keywords (1–2 words each): subject, pose, clothing & colors, setting, occasion, framing.")
                     LabelRow(icon: "magnifyingglass", text: "Keywords are instantly searchable in the Photos app — try typing “yellow shirt” or “lake” in its search bar.")
                     LabelRow(icon: "checkmark.shield", text: "Photos are never edited, re-encoded, or deleted. The only change is adding keywords, merged with any you set yourself.")
                     LabelRow(icon: "internaldrive", text: "PhotoTagger has tagged \(model.store.ids.count) photos so far — this index is stored on this Mac and persists across restarts and app updates.")

@@ -45,6 +45,12 @@ final class DebugLog {
 
     private let capacity = 1000
 
+    /// Entries are also appended here so problems can be inspected after a
+    /// run (the in-app pane is memory-only). Rotated at ~4 MB.
+    nonisolated private static let fileURL = URL.homeDirectory
+        .appendingPathComponent("Library/Logs/PhotoTagger/debug.log")
+    private var didPrepareLogFile = false
+
     // MARK: - Recording
 
     func error(_ category: String, _ message: String) {
@@ -71,6 +77,32 @@ final class DebugLog {
         }
         // "%@" — messages can contain model output with % characters.
         NSLog("%@", "PhotoTagger [\(category)] \(level.label): \(message)")
+        appendToFile(level: level, category: category, message: message)
+    }
+
+    private func appendToFile(level: Level, category: String, message: String) {
+        let url = Self.fileURL
+        if !didPrepareLogFile {
+            try? FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            didPrepareLogFile = true
+        }
+        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size]
+            as? Int, size > 4_000_000
+        {
+            try? FileManager.default.removeItem(at: url)
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else {
+            try? Data("\(Date()) [\(level.label)] [\(category)] \(message)\n".utf8)
+                .write(to: url)
+            return
+        }
+        defer { try? handle.close() }
+        _ = try? handle.seekToEnd()
+        let time = Date().formatted(
+            .dateTime.hour().minute().second().secondFraction(.fractional(3)))
+        try? handle.write(
+            Data("\(time) [\(level.label)] [\(category)] \(message)\n".utf8))
     }
 
     func clear() {
