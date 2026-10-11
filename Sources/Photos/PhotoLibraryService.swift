@@ -234,6 +234,17 @@ final class PhotoLibraryService {
     }
 
     private func fetchImage(for asset: PHAsset, maxPixelSize: CGFloat) async throws -> CGImage {
+        let data = try await fetchImageData(for: asset)
+        // Decode off the main actor: a 12 MP HEIC decode takes 100-300 ms
+        // and PhotoKit delivers its callback on an arbitrary thread — often
+        // the main one — which would jank the UI and serialize with
+        // everything else running there.
+        return try await Task.detached(priority: .userInitiated) {
+            try Self.decode(data, maxPixelSize: maxPixelSize)
+        }.value
+    }
+
+    private func fetchImageData(for asset: PHAsset) async throws -> Data {
         let options = PHImageRequestOptions()
         options.isNetworkAccessAllowed = true
         options.deliveryMode = .highQualityFormat
@@ -246,19 +257,7 @@ final class PhotoLibraryService {
                 guard !resumed else { return }
                 resumed = true
 
-                let degraded = (info?[PHImageResultIsDegradedKey] as? Bool) ?? false
-                guard !degraded, let data,
-                    let source = CGImageSourceCreateWithData(
-                        data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
-                    let image = CGImageSourceCreateThumbnailAtIndex(
-                        source, 0,
-                        [
-                            kCGImageSourceCreateThumbnailFromImageAlways: true,
-                            kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
-                            kCGImageSourceCreateThumbnailWithTransform: true,
-                            kCGImageSourceShouldCacheImmediately: true,
-                        ] as CFDictionary)
-                else {
+                guard let data else {
                     // Preserve the underlying Photos error when present, and
                     // annotate the request context so the debug log shows
                     // whether iCloud was involved.
@@ -276,9 +275,27 @@ final class PhotoLibraryService {
                     continuation.resume(throwing: annotated)
                     return
                 }
-                continuation.resume(returning: image)
+                continuation.resume(returning: data)
             }
         }
+    }
+
+    nonisolated private static func decode(_ data: Data, maxPixelSize: CGFloat) throws -> CGImage {
+        guard
+            let source = CGImageSourceCreateWithData(
+                data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
+            let image = CGImageSourceCreateThumbnailAtIndex(
+                source, 0,
+                [
+                    kCGImageSourceCreateThumbnailFromImageAlways: true,
+                    kCGImageSourceThumbnailMaxPixelSize: maxPixelSize,
+                    kCGImageSourceCreateThumbnailWithTransform: true,
+                    kCGImageSourceShouldCacheImmediately: true,
+                ] as CFDictionary)
+        else {
+            throw PhotoLibraryError.imageUnavailable
+        }
+        return image
     }
 
     // MARK: - Display name

@@ -157,13 +157,13 @@ struct AlbumDetailView: View {
                         set: { model.visionDetail = $0 }
                     )) {
                         Text("640 · fastest").tag(640)
-                        Text("768").tag(768)
+                        Text("768 · default").tag(768)
                         Text("1024 · best").tag(1024)
                     }
                     .pickerStyle(.segmented)
                     .frame(width: 220)
                     .disabled(model.runIsActive)
-                    Text("Image size the AI sees — smaller is faster, with a little less fine detail.")
+                    Text("Image size the AI sees — 768 is a good speed/detail balance for tags.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Spacer()

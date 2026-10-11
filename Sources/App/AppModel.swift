@@ -99,15 +99,16 @@ final class AppModel {
     nonisolated private static let parallelTaggingKey = "parallelTagging"
 
     /// Longest image edge (px) fed to the model. Vision tokens scale with
-    /// pixel area, so smaller images prefill much faster at some cost in
-    /// fine detail. Persisted; 640 / 768 / 1024.
+    /// pixel area, so 768 px prefills ~2x faster than 1024 px with only a
+    /// small loss of fine detail — plenty for tags. Persisted;
+    /// 640 / 768 / 1024, default 768.
     var visionDetail: Int = {
         let stored = UserDefaults.standard.integer(forKey: AppModel.visionDetailKey)
-        return [640, 768, 1024].contains(stored) ? stored : 1024
+        return [640, 768, 1024].contains(stored) ? stored : 768
     }() {
         didSet {
             guard [640, 768, 1024].contains(visionDetail) else {
-                visionDetail = 1024
+                visionDetail = 768
                 return
             }
             UserDefaults.standard.set(visionDetail, forKey: AppModel.visionDetailKey)
@@ -152,6 +153,11 @@ final class AppModel {
             return
         }
         if args.contains("-preloadModel") {
+            modelStore.startLoadingIfNeeded()
+        } else if modelStore.isLikelyCached {
+            // The snapshot is already on disk: warm the model at launch so
+            // the first "Tag All" doesn't pay the load. Never triggers a
+            // download — that waits for an explicit run.
             modelStore.startLoadingIfNeeded()
         }
 

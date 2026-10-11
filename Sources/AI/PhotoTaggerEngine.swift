@@ -13,27 +13,25 @@ struct PhotoTaggerEngine {
     let container: ModelContainer
 
     static let prompt = """
-        You tag photos in a personal photo library so they can be found later by searching. Tags must be SPECIFIC and DESCRIPTIVE — generic tags like "person", "people", "indoor" or "outdoor" are useless for search.
+        You tag photos in a personal photo library so they can be found by search. Tags must be specific and descriptive — "person", "indoor", "outdoor" are useless.
 
-        Look at the photo and output ONLY a comma-separated list of 8-12 tags. No other text, no explanations.
+        Output ONLY a comma-separated list of 8-12 tags. Each tag is 1 or 2 lowercase words, never more; hyphenated compounds count as one word ("mid-air", "close-up"). No other text.
 
-        Every tag is 1 or 2 lowercase words — never 3 or more. Hyphenated compounds count as one word ("mid-air", "close-up", "cross-legged").
+        Cover what is clearly visible:
+        - subject: "woman", "toddler", "golden retriever", "red bicycle"
+        - pose or action: "sitting cross-legged", "mid-air jump", "arms crossed", "cutting cake"
+        - clothing with color: "yellow shirt", "red raincoat", "blue saree"
+        - specific setting: "rocky beach", "hiking trail", "temple courtyard", "dinner table"
+        - occasion: "birthday party", "wedding", "street food"
+        - framing and style: "close-up", "selfie", "golden hour", "monochrome", "candid"
 
-        Cover as many of these as are clearly visible:
-        - subject: who or what ("woman", "toddler", "golden retriever", "red bicycle")
-        - pose or action: "sitting cross-legged", "mid-air jump", "lying down", "looking away", "arms crossed", "cutting cake"
-        - clothing with color: "yellow shirt", "red raincoat", "white kurta", "blue saree"
-        - specific setting: "rocky beach", "dinner table", "hiking trail", "temple courtyard", "apartment balcony"
-        - occasion: "birthday party", "street food", "wedding", "road trip"
-        - framing and style: "close-up", "selfie", "golden hour", "backlit", "monochrome", "candid"
-
-        Prefer two precise words over one generic word ("red raincoat", not "clothing"). Never guess names, places or relationships you cannot see.
+        Prefer two precise words over one generic word. Never guess names, places or relationships.
         """
 
     func rawTags(for image: CGImage) async throws -> String {
         let session = ChatSession(
             container,
-            generateParameters: GenerateParameters(maxTokens: 96, temperature: 0),
+            generateParameters: GenerateParameters(maxTokens: 64, temperature: 0),
             processing: UserInput.Processing(resize: nil)
         )
         let ciImage = CIImage(cgImage: image)

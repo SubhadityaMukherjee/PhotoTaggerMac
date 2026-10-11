@@ -46,10 +46,12 @@ final class DebugLog {
     private let capacity = 1000
 
     /// Entries are also appended here so problems can be inspected after a
-    /// run (the in-app pane is memory-only). Rotated at ~4 MB.
+    /// run (the in-app pane is memory-only). Rotated at ~4 MB. The handle
+    /// stays open — entries are frequent during failure storms.
     nonisolated private static let fileURL = URL.homeDirectory
         .appendingPathComponent("Library/Logs/PhotoTagger/debug.log")
-    private var didPrepareLogFile = false
+    @ObservationIgnored private var fileHandle: FileHandle?
+    @ObservationIgnored private var fileBytes = 0
 
     // MARK: - Recording
 
@@ -81,28 +83,41 @@ final class DebugLog {
     }
 
     private func appendToFile(level: Level, category: String, message: String) {
-        let url = Self.fileURL
-        if !didPrepareLogFile {
-            try? FileManager.default.createDirectory(
-                at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            didPrepareLogFile = true
+        if fileHandle == nil { openLogFile() }
+        if fileBytes > 4_000_000 {
+            // Rotate: close, delete, start fresh.
+            try? fileHandle?.close()
+            try? FileManager.default.removeItem(at: Self.fileURL)
+            fileHandle = nil
+            openLogFile()
         }
-        if let size = (try? FileManager.default.attributesOfItem(atPath: url.path))?[.size]
-            as? Int, size > 4_000_000
-        {
-            try? FileManager.default.removeItem(at: url)
-        }
-        guard let handle = try? FileHandle(forWritingTo: url) else {
-            try? Data("\(Date()) [\(level.label)] [\(category)] \(message)\n".utf8)
-                .write(to: url)
-            return
-        }
-        defer { try? handle.close() }
-        _ = try? handle.seekToEnd()
+        guard let handle = fileHandle else { return }
+
         let time = Date().formatted(
             .dateTime.hour().minute().second().secondFraction(.fractional(3)))
-        try? handle.write(
-            Data("\(time) [\(level.label)] [\(category)] \(message)\n".utf8))
+        let chunk = Data("\(time) [\(level.label)] [\(category)] \(message)\n".utf8)
+        do {
+            try handle.write(contentsOf: chunk)
+            fileBytes += chunk.count
+        } catch {
+            // Next entry tries to reopen.
+            fileHandle = nil
+        }
+    }
+
+    /// Opens (creating if needed) the log file once and keeps the handle
+    /// around, so each entry is a single write instead of open/stat/close.
+    private func openLogFile() {
+        let url = Self.fileURL
+        try? FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: url.path) {
+            FileManager.default.createFile(atPath: url.path, contents: nil)
+        }
+        guard let handle = try? FileHandle(forWritingTo: url) else { return }
+        _ = try? handle.seekToEnd()
+        fileHandle = handle
+        fileBytes = Int((try? handle.offset()) ?? 0)
     }
 
     func clear() {

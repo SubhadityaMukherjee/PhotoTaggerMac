@@ -75,7 +75,7 @@ PHAssetChangeRequest.addKeyword(…) for each tag   (Photos merges additively �
 - A fresh chat session is used per photo so no tags leak between images.
 - Tag output is heavily sanitized before it reaches your library (see `Sources/AI/TagParser.swift`, covered by unit tests).
 - Runs show live pace and estimated remaining time. Photos are tagged **in parallel** (2 by default, 1–4 via the *Parallel* picker on the album page): each worker runs its own `ChatSession` over the shared weights — which MLX explicitly supports, since only the per-session KV cache is private — and keeps the *next* photo's load (iCloud fetch + HEIC decode) in flight while the current one is being tagged, so loading, inference, and keyword writes overlap. GPU kernels still share one device, so the speedup comes from overlap rather than doubled inference; each extra worker adds a few hundred MB of KV-cache memory. `parallelTagging = 1` restores strictly sequential behavior.
-- The *Detail* picker (1024 / 768 / 640 px) controls the image size fed to the model. Vision tokens scale with pixel area, so 768 px is substantially faster than 1024 px with only a small loss of fine detail; 640 px is the fastest and still fine for subject/setting/activity tags. Tune the combination with the probe: `-concurrencyProbe <path>` (see "Verifying a build").
+- The *Detail* picker (640 / 768 / 1024 px, default 768) controls the image size fed to the model. Vision tokens scale with pixel area, so 768 px prefills ~2× faster than 1024 px with only a small loss of fine detail; 640 px is the fastest and still fine for subject/setting/activity tags. Tune the combination with the probe: `-concurrencyProbe <path>` (see "Verifying a build").
 
 ## Model download integrity
 

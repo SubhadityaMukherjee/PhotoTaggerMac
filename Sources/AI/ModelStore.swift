@@ -72,6 +72,35 @@ final class ModelStore {
     var displayName: String { choice.displayName }
     var approximateBytes: Int64 { choice.approximateBytes }
 
+    /// True when a complete-looking snapshot for the selected model is in
+    /// the Hugging Face cache — at least one `.safetensors` file linked
+    /// under `snapshots/` (partial downloads never get that far). Used to
+    /// decide whether loading at app launch is "free" rather than a
+    /// surprise multi-GB download.
+    var isLikelyCached: Bool {
+        let snapshots = Self.cacheDirectory(for: choice.modelID)
+            .appendingPathComponent("snapshots")
+        guard let revisions = try? FileManager.default.contentsOfDirectory(
+            atPath: snapshots.path)
+        else { return false }
+        for revision in revisions {
+            let files = (try? FileManager.default.contentsOfDirectory(
+                atPath: snapshots.appendingPathComponent(revision).path)) ?? []
+            if files.contains(where: { $0.hasSuffix(".safetensors") }) {
+                return true
+            }
+        }
+        return false
+    }
+
+    /// HF cache dirs are named `models--org--name` (the `models--` kind
+    /// prefix included) under `~/.cache/huggingface/hub`.
+    nonisolated private static func cacheDirectory(for modelID: String) -> URL {
+        URL.homeDirectory
+            .appendingPathComponent(".cache/huggingface/hub")
+            .appendingPathComponent("models--" + modelID.replacingOccurrences(of: "/", with: "--"))
+    }
+
     init() {
         if let raw = UserDefaults.standard.string(forKey: Self.choiceKey),
             let stored = ModelChoice(rawValue: raw)
@@ -331,13 +360,9 @@ final class ModelStore {
     }
 
     /// Removes the HF cache for this repo so a corrupted/partial snapshot
-    /// can't come back. HF cache dirs are named `models--org--name` (the
-    /// `models--` kind prefix included) under `~/.cache/huggingface/hub`.
+    /// can't come back.
     nonisolated static func wipeRepoCache(modelID: String) throws {
-        let cacheRoot = URL.homeDirectory
-            .appendingPathComponent(".cache/huggingface/hub")
-        let repoDir = cacheRoot.appendingPathComponent(
-            "models--" + modelID.replacingOccurrences(of: "/", with: "--"))
+        let repoDir = cacheDirectory(for: modelID)
         guard FileManager.default.fileExists(atPath: repoDir.path) else { return }
         try FileManager.default.removeItem(at: repoDir)
     }
